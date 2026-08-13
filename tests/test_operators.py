@@ -1,0 +1,485 @@
+"""Run inside Blender: blender --background --python tests/test_operators.py
+
+End-to-end test of the addon through its actual bpy.ops operators (register,
+select a face, generate preview, commit, repeat for a second patch, verify
+the accumulated RetopResult mesh).
+"""
+import os
+import sys
+import importlib
+
+# Make the test runnable from any checkout: the addon package is the parent
+# directory of tests/, so put its parent on sys.path and import it by folder
+# name (the hyphen means it can only be imported via import_module).
+_ADDON_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(_ADDON_DIR))
+
+import math
+
+
+import bpy
+import bmesh
+
+pr = importlib.import_module(os.path.basename(_ADDON_DIR))
+
+FAILURES = []
+
+
+def check(name, cond, extra=""):
+    status = "PASS" if cond else "FAIL"
+    print(f"[{status}] {name} {extra}")
+    if not cond:
+        FAILURES.append(name)
+
+
+try:
+    pr.unregister()  # in case it's already enabled via saved user preferences
+except Exception:
+    pass
+pr.register()
+
+# ---------------------------------------------------------------------------
+# Build the same synthetic 2-patch mesh as bg_test_retop.py
+# ---------------------------------------------------------------------------
+N = 4
+verts = []
+groups = []
+face_ids = []
+grid_index = {}
+for j in range(N + 1):
+    for i in range(N + 1):
+        z = 0.4 * math.sin(i / N * math.pi) * math.sin(j / N * math.pi)
+        grid_index[(i, j)] = len(verts)
+        verts.append((i, j, z))
+
+patch_a_tris = []
+for j in range(N):
+    for i in range(N):
+        v00 = grid_index[(i, j)]
+        v10 = grid_index[(i + 1, j)]
+        v11 = grid_index[(i + 1, j + 1)]
+        v01 = grid_index[(i, j + 1)]
+        patch_a_tris.append((v00, v10, v11))
+        patch_a_tris.append((v00, v11, v01))
+
+groups.extend([0, len(patch_a_tris) * 3])
+face_ids.append(101)
+
+apex_index = len(verts)
+verts.append((N / 2, N + 2.0, 1.9))
+patch_b_tris = []
+for i in range(N):
+    v_a = grid_index[(i, N)]
+    v_b = grid_index[(i + 1, N)]
+    patch_b_tris.append((v_b, v_a, apex_index))
+
+groups.extend([len(patch_a_tris) * 3, len(patch_b_tris) * 3])
+face_ids.append(202)
+
+mesh = bpy.data.meshes.new("PlasticityTestMesh")
+mesh.from_pydata(verts, [], patch_a_tris + patch_b_tris)
+mesh.update()
+mesh["groups"] = groups
+mesh["face_ids"] = face_ids
+
+obj = bpy.data.objects.new("PlasticityTestObj", mesh)
+bpy.context.collection.objects.link(obj)
+bpy.context.view_layer.objects.active = obj
+obj.select_set(True)
+
+check("panel registered", hasattr(bpy.types, "VIEW3D_PT_retop"))
+check("operator registered", hasattr(bpy.ops.retop, "session"))
+
+# --- dedicated addon-only reload. The operator itself just schedules a
+# bpy.app.timers callback (safe: never unregisters its own class while its
+# execute() is still on the call stack -- doing that inline is what crashed
+# Blender natively the first time this was tried), so it can't be exercised
+# end-to-end in --background mode (no running event loop to fire the timer).
+# Call the underlying reload function directly to verify the actual
+# unregister/reload/register cycle itself is correct. ---
+res = bpy.ops.retop.reload_addon()
+check("reload_addon operator FINISHED (schedules the real work)", res == {'FINISHED'}, str(res))
+
+pr.operators._perform_reload()
+check("panel still registered after _perform_reload", hasattr(bpy.types, "VIEW3D_PT_retop"))
+check("operators still registered after _perform_reload", hasattr(bpy.ops.retop, "session"))
+check("scene state survives _perform_reload", hasattr(bpy.context.scene, "plasticity_retop"))
+
+
+def activate_patch(obj, poly_index):
+    """Pick the patch owning `poly_index` via the same code path the viewport
+    picker uses on click (set_active_patch), since the Edit Mode fallback
+    operator was removed."""
+    face_id_of_poly, _ = pr.patch_data.polygon_face_ids(obj.data)
+    face_id = face_id_of_poly[poly_index]
+    return pr.operators.set_active_patch(bpy.context, obj, face_id)
+
+
+# ---------------------------------------------------------------------------
+# Patch A (quad, poly 0)
+# ---------------------------------------------------------------------------
+gen_name, n_sides, _prop = activate_patch(obj, 0)
+check("set_active_patch (A) resolved a generator", gen_name is not None, str(gen_name))
+
+state = bpy.context.scene.plasticity_retop
+check("state.generator_name == Quad", state.generator_name == "Quad", state.generator_name)
+check("state.active_face_id == 101", state.active_face_id == 101, state.active_face_id)
+
+preview_obj = bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME)
+check("preview object exists after generate (A)", preview_obj is not None)
+expected_faces_a = state.span_u * state.span_v
+check("preview face count matches span (A)",
+      preview_obj is not None and len(preview_obj.data.polygons) == expected_faces_a,
+      f"expected {expected_faces_a}, got {len(preview_obj.data.polygons) if preview_obj else 'N/A'}")
+
+# --- live-update test: changing span_u/span_v via the property (as the N-panel
+# sliders do) must regenerate the preview automatically, with no explicit
+# Update Preview button click. ---
+state.span_u = 6
+state.span_v = 3
+preview_obj = bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME)
+expected_faces_live = 6 * 3
+check("live span_u/span_v update regenerates preview automatically",
+      preview_obj is not None and len(preview_obj.data.polygons) == expected_faces_live,
+      f"expected {expected_faces_live}, got {len(preview_obj.data.polygons) if preview_obj else 'N/A'}")
+# restore defaults for the rest of the test
+state.span_u = 4
+state.span_v = 4
+expected_faces_a = state.span_u * state.span_v
+
+res = bpy.ops.retop.commit_patch()
+check("commit_patch (A) FINISHED", res == {'FINISHED'}, str(res))
+
+result_obj = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
+check("result object exists after commit (A)", result_obj is not None)
+check("preview object removed after commit (A)",
+      bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME) is None)
+faces_after_a = len(result_obj.data.polygons) if result_obj else 0
+check("result face count == patch A faces", faces_after_a == expected_faces_a,
+      f"expected {expected_faces_a}, got {faces_after_a}")
+
+uv_layer = result_obj.data.uv_layers.get("UVMap") if result_obj else None
+check("result mesh has a UVMap", uv_layer is not None)
+
+# ---------------------------------------------------------------------------
+# Patch B (triangle, poly index = len(patch_a_tris))
+# ---------------------------------------------------------------------------
+gen_name_b, n_sides_b, _prop_b = activate_patch(obj, len(patch_a_tris))
+check("set_active_patch (B) resolved a generator", gen_name_b is not None, str(gen_name_b))
+check("state.generator_name == Triangle", state.generator_name == "Triangle", state.generator_name)
+check("state.active_face_id == 202", state.active_face_id == 202, state.active_face_id)
+
+preview_obj = bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME)
+expected_faces_b = state.span * state.span
+check("preview face count matches span (B)",
+      preview_obj is not None and len(preview_obj.data.polygons) == expected_faces_b,
+      f"expected {expected_faces_b}, got {len(preview_obj.data.polygons) if preview_obj else 'N/A'}")
+
+# --- propagation: patch B shares its base edge with patch A's committed top
+# edge (length N=4, patch A used span 4 there since it's a square). Its
+# default span should now be propagated to 4 instead of independently
+# computed (~2), so both patches are fully welded along that whole edge, not
+# just at the two corners. ---
+check("patch B span propagated from committed patch A", state.span == 4, f"got {state.span}")
+
+# --- result highlight is owned by the retop *session*, not by individual
+# patch edits: picking a patch outside a session (as this part of the test
+# does) must NOT switch it on. The session lifecycle is covered further down. ---
+result_obj_mid_edit = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
+check("editing a patch outside a session leaves the result resting",
+      result_obj_mid_edit is not None and not result_obj_mid_edit.show_in_front,
+      f"show_in_front={result_obj_mid_edit.show_in_front if result_obj_mid_edit else 'N/A'}")
+
+# --- cosmetic offset must be a non-destructive modifier, never baked into
+# the committed geometry. ---
+state.preview_offset = 0.5
+preview_obj = bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME)
+mod = preview_obj.modifiers.get(pr.mesh_build.OFFSET_MODIFIER_NAME) if preview_obj else None
+check("offset modifier added with correct strength",
+      mod is not None and abs(mod.strength - 0.5) < 1e-6,
+      f"mod={mod}, strength={mod.strength if mod else 'N/A'}")
+
+apex_local_before = preview_obj.data.vertices[-1].co.copy()  # base mesh, unaffected by the modifier
+state.preview_offset = 0.0
+mod_after = preview_obj.modifiers.get(pr.mesh_build.OFFSET_MODIFIER_NAME)
+check("offset modifier removed when offset is 0", mod_after is None)
+
+res = bpy.ops.retop.commit_patch()
+check("commit_patch (B) FINISHED", res == {'FINISHED'}, str(res))
+
+result_obj = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
+total_faces = len(result_obj.data.polygons) if result_obj else 0
+check("result face count == patch A + patch B faces",
+      total_faces == expected_faces_a + expected_faces_b,
+      f"expected {expected_faces_a + expected_faces_b}, got {total_faces}")
+
+check("result rests when no session owns it (opaque, no in-front/wire)",
+      result_obj is not None and not result_obj.show_in_front and not result_obj.show_wire
+      and abs(result_obj.color[3] - 1.0) < 1e-6,
+      f"show_in_front={result_obj.show_in_front}, alpha={result_obj.color[3]}")
+
+# ---------------------------------------------------------------------------
+# Session lifecycle: enter object -> highlight + PATCH phase; commit returns
+# to PATCH (so the next surface can be picked immediately); leaving the object
+# drops the highlight but keeps the session; ending it clears everything.
+# ---------------------------------------------------------------------------
+pr.operators.enter_session_object(bpy.context, obj)
+check("entering an object marks the session active", state.session_active, str(state.session_active))
+check("entering an object moves to the PATCH phase", state.session_phase == 'PATCH', state.session_phase)
+check("entering an object records it", state.session_object_name == obj.name, state.session_object_name)
+
+result_obj = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
+check("entering an object highlights its result mesh",
+      result_obj is not None and result_obj.show_in_front and result_obj.show_wire,
+      f"show_in_front={result_obj.show_in_front if result_obj else 'N/A'}")
+
+# Retop one more patch and commit: active_face_id must clear (that's the
+# signal a running session watches to go back to picking a surface), while
+# the highlight stays on because the session still owns the object.
+activate_patch(obj, 0)
+check("patch active again inside the session", state.active_face_id == 101, state.active_face_id)
+bpy.ops.retop.commit_patch()
+check("commit clears active_face_id (session returns to picking)", state.active_face_id == -1,
+      state.active_face_id)
+result_obj = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
+check("commit keeps the session highlight on", result_obj.show_in_front, result_obj.show_in_front)
+
+pr.operators.exit_session_object(bpy.context)
+check("leaving the object returns to the OBJECT phase", state.session_phase == 'OBJECT', state.session_phase)
+check("leaving the object clears the highlight", not result_obj.show_in_front, result_obj.show_in_front)
+
+pr.operators.end_session(bpy.context)
+check("ending the session clears session state",
+      not state.session_active and state.session_object_name == "" and state.active_face_id == -1,
+      f"active={state.session_active}, obj='{state.session_object_name}'")
+
+# ---------------------------------------------------------------------------
+# Keybind plumbing: which span the wheel drives, Tab switching U/V, and the
+# overlay's hint list per phase.
+# ---------------------------------------------------------------------------
+state.generator_name = "Quad"
+state.span_axis = 'U'
+check("wheel drives span_u on a quad in U mode",
+      pr.operators.active_span_prop(state) == "span_u", pr.operators.active_span_prop(state))
+state.span_axis = 'V'
+check("wheel drives span_v on a quad in V mode",
+      pr.operators.active_span_prop(state) == "span_v", pr.operators.active_span_prop(state))
+state.generator_name = "Triangle"
+check("wheel drives the single span on a triangle",
+      pr.operators.active_span_prop(state) == "span", pr.operators.active_span_prop(state))
+
+# Nudging must go through the property (so the live-update callback fires) and
+# never fall below 1.
+state.generator_name = "Quad"
+state.span_axis = 'U'
+state.span_u = 3
+_nudge = pr.operators.RETOP_OT_session._nudge_span
+_nudge(None, bpy.context, +2)
+check("scroll up raises the active span", state.span_u == 5, state.span_u)
+_nudge(None, bpy.context, -10)
+check("scroll down clamps the span at 1", state.span_u == 1, state.span_u)
+
+state.session_phase = 'ADJUST'
+adjust_keys = [k for k, _a in pr.overlay.keybinds_for(state)]
+check("adjust overlay lists the Plasticity-style binds",
+      "Ctrl+Scroll" in adjust_keys and "Tab" in adjust_keys and "R-Click" in adjust_keys,
+      str(adjust_keys))
+state.generator_name = "Triangle"
+check("Tab hint is hidden for non-quad patches (single span)",
+      "Tab" not in [k for k, _a in pr.overlay.keybinds_for(state)],
+      str([k for k, _a in pr.overlay.keybinds_for(state)]))
+state.session_phase = 'PATCH'
+check("patch phase overlay shows its own binds",
+      [k for k, _a in pr.overlay.keybinds_for(state)] == ["Click", "Esc"],
+      str(pr.overlay.keybinds_for(state)))
+
+# ---------------------------------------------------------------------------
+# Typed span entry: digits set the active span directly, Backspace edits it.
+# ---------------------------------------------------------------------------
+_session_cls = pr.operators.RETOP_OT_session
+
+
+class _TypingSelf:
+    _typed = ""
+
+    def _set_typed(self, value):
+        self._typed = value
+
+    _flush_typed_span = _session_cls._flush_typed_span
+    _handle_typed_digit = _session_cls._handle_typed_digit
+
+
+class _KeyEvent:
+    def __init__(self, key):
+        self.type = key
+
+
+typer = _TypingSelf()
+state.generator_name = "Quad"
+state.span_axis = 'U'
+state.span_u = 4
+
+check("digit key is consumed", typer._handle_typed_digit(bpy.context, _KeyEvent('ONE')) is True)
+typer._handle_typed_digit(bpy.context, _KeyEvent('TWO'))
+check("typing '12' sets the span to 12", state.span_u == 12, state.span_u)
+typer._handle_typed_digit(bpy.context, _KeyEvent('BACK_SPACE'))
+check("backspace trims the typed span back to 1", state.span_u == 1, state.span_u)
+check("numpad digits work too", typer._handle_typed_digit(bpy.context, _KeyEvent('NUMPAD_5')) is True)
+check("typing '15' after backspace sets 15", state.span_u == 15, state.span_u)
+check("non-digit keys are not consumed",
+      typer._handle_typed_digit(bpy.context, _KeyEvent('A')) is False)
+
+typer._set_typed("")
+typer._handle_typed_digit(bpy.context, _KeyEvent('ZERO'))
+check("a leading zero doesn't drop the span below 1", state.span_u >= 1, state.span_u)
+
+# ---------------------------------------------------------------------------
+# Show All Retopo: every result mesh is visible while a session runs, with the
+# worked-on one at full alpha and the others dimmed.
+# ---------------------------------------------------------------------------
+second_mesh = bpy.data.meshes.new("SecondSource")
+second_mesh.from_pydata([(9, 0, 0), (10, 0, 0), (10, 1, 0)], [], [(0, 1, 2)])
+second_mesh.update()
+second_mesh["groups"] = [0, 3]
+second_mesh["face_ids"] = [909]
+second_obj = bpy.data.objects.new("SecondSource", second_mesh)
+bpy.context.collection.objects.link(second_obj)
+pr.mesh_build.ensure_result_object(bpy.context, second_obj)
+
+state.session_active = True
+state.session_object_name = obj.name
+state.highlight_all_results = True
+state.result_alpha = 1.0
+state.inactive_result_alpha = 0.25
+pr.mesh_build.refresh_result_appearance(bpy.context)
+
+active_result = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
+other_result = bpy.data.objects.get(pr.mesh_build.result_object_name_for(second_obj))
+check("the worked-on result is drawn in front at full alpha",
+      active_result.show_in_front and abs(active_result.color[3] - 1.0) < 1e-6,
+      f"in_front={active_result.show_in_front}, alpha={active_result.color[3]}")
+check("other retopo meshes are shown dimmed, not in front",
+      other_result.show_wire and not other_result.show_in_front
+      and abs(other_result.color[3] - 0.25) < 1e-6,
+      f"wire={other_result.show_wire}, in_front={other_result.show_in_front}, alpha={other_result.color[3]}")
+check("the two use different materials (one alpha each)",
+      active_result.data.materials[0] is not other_result.data.materials[0],
+      f"{active_result.data.materials[0].name} vs {other_result.data.materials[0].name}")
+
+state.highlight_all_results = False
+pr.mesh_build.refresh_result_appearance(bpy.context)
+check("disabling Show All Retopo rests the other meshes",
+      not other_result.show_wire and abs(other_result.color[3] - 1.0) < 1e-6,
+      f"wire={other_result.show_wire}, alpha={other_result.color[3]}")
+check("the worked-on result stays highlighted regardless",
+      active_result.show_in_front, active_result.show_in_front)
+
+state.highlight_all_results = True
+state.session_active = False
+pr.mesh_build.refresh_result_appearance(bpy.context)
+check("with no session everything rests",
+      not active_result.show_in_front and not other_result.show_wire,
+      f"active_in_front={active_result.show_in_front}, other_wire={other_result.show_wire}")
+
+# ---------------------------------------------------------------------------
+# Result offset: keeps the retopo off the CAD surface so they don't z-fight,
+# without ever changing the geometry that renders/exports.
+# ---------------------------------------------------------------------------
+state.result_offset = 0.0  # automatic
+pr.mesh_build.refresh_result_appearance(bpy.context)
+off_mod = active_result.modifiers.get(pr.mesh_build.RESULT_OFFSET_MODIFIER_NAME)
+check("auto result offset adds a Displace modifier", off_mod is not None)
+check("auto offset scales with the source object, not a magic constant",
+      off_mod is not None and off_mod.strength > 0.0
+      and abs(off_mod.strength - obj.dimensions.length * pr.mesh_build.AUTO_OFFSET_RATIO) < 1e-9,
+      f"strength={off_mod.strength if off_mod else 'N/A'}, dims={tuple(obj.dimensions)}")
+check("result offset is viewport-only (never rendered/exported)",
+      off_mod is not None and off_mod.show_render is False,
+      f"show_render={off_mod.show_render if off_mod else 'N/A'}")
+check("result offset displaces along normals from zero",
+      off_mod is not None and off_mod.direction == 'NORMAL' and off_mod.mid_level == 0.0,
+      f"direction={off_mod.direction if off_mod else 'N/A'}")
+
+state.length_unit = 'MM'
+state.result_offset = 2.0  # 2 mm, explicit
+pr.mesh_build.refresh_result_appearance(bpy.context)
+off_mod = active_result.modifiers.get(pr.mesh_build.RESULT_OFFSET_MODIFIER_NAME)
+check("an explicit result offset is converted from the chosen unit",
+      off_mod is not None and abs(off_mod.strength - 0.002) < 1e-9,
+      f"strength={off_mod.strength if off_mod else 'N/A'}")
+state.length_unit = 'M'
+state.result_offset = 0.0
+
+# The committed geometry itself must be untouched by the cosmetic offset.
+vert_before = active_result.data.vertices[0].co.copy()
+pr.mesh_build.refresh_result_appearance(bpy.context)
+check("the offset never moves the stored result geometry",
+      (active_result.data.vertices[0].co - vert_before).length < 1e-12,
+      str((active_result.data.vertices[0].co - vert_before).length))
+
+state.session_phase = 'ADJUST'
+check("overlay advertises Ctrl+Scroll for spans (plain wheel stays zoom)",
+      any(k == "Ctrl+Scroll" for k, _a in pr.overlay.keybinds_for(state)),
+      str([k for k, _a in pr.overlay.keybinds_for(state)]))
+check("overlay no longer claims the plain wheel",
+      not any(k == "Scroll" for k, _a in pr.overlay.keybinds_for(state)),
+      str([k for k, _a in pr.overlay.keybinds_for(state)]))
+
+# ---------------------------------------------------------------------------
+# Stale-session recovery: if the modal dies without reaching _finish (addon
+# reloaded mid-session, or an exception), the scene still says "in session"
+# while nothing listens to clicks/Esc. The panel must be able to tell, and
+# end_session must clear it.
+# ---------------------------------------------------------------------------
+state.session_active = True
+state.session_object_name = obj.name
+state.session_phase = 'PATCH'
+check("a session with no running modal is reported as not running",
+      not pr.operators.session_is_running(), str(pr.operators.session_is_running()))
+
+res = bpy.ops.retop.end_session()
+check("end_session operator FINISHED", res == {'FINISHED'}, str(res))
+check("end_session clears the stale state",
+      not state.session_active and state.session_object_name == "",
+      f"active={state.session_active}, obj='{state.session_object_name}'")
+
+# Reloading mid-session must not leave a phantom session behind.
+state.session_active = True
+state.session_object_name = obj.name
+state.session_phase = 'PATCH'
+pr.operators._perform_reload()
+pr2 = importlib.import_module(os.path.basename(_ADDON_DIR))
+state = bpy.context.scene.plasticity_retop
+check("reloading mid-session tears the session down",
+      not state.session_active and not pr2.operators.session_is_running(),
+      f"active={state.session_active}, running={pr2.operators.session_is_running()}")
+pr = pr2
+
+# --- metric unit conversion ---
+state.length_unit = 'MM'
+check("mm converts to Blender units", abs(pr.state.to_blender_units(state, 1.0) - 0.001) < 1e-12,
+      str(pr.state.to_blender_units(state, 1.0)))
+state.length_unit = 'IN'
+check("inches convert to Blender units", abs(pr.state.to_blender_units(state, 1.0) - 0.0254) < 1e-12,
+      str(pr.state.to_blender_units(state, 1.0)))
+state.length_unit = 'M'
+check("meters are 1:1 with Blender units", abs(pr.state.to_blender_units(state, 1.0) - 1.0) < 1e-12,
+      str(pr.state.to_blender_units(state, 1.0)))
+
+# Boundary vertices shared between A and B should be welded (both patches
+# were built from the same source boundary loop and neither reprojects its
+# own boundary), so vertex count should be noticeably less than the naive
+# sum of both patches' independent grids.
+naive_sum_verts = (state.span_u + 1) * (state.span_v + 1)  # not reused directly, just documents intent
+print(f"result verts={len(result_obj.data.vertices)} faces={total_faces}")
+
+# ---------------------------------------------------------------------------
+pr.unregister()
+
+print()
+if FAILURES:
+    print(f"=== {len(FAILURES)} FAILURE(S): {FAILURES}")
+    sys.exit(1)
+else:
+    print("=== ALL CHECKS PASSED")
+    sys.exit(0)
