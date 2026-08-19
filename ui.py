@@ -56,11 +56,38 @@ class VIEW3D_PT_retop(bpy.types.Panel):
             elif phase == 'PATCH':
                 box.label(text="Pick a surface", icon='RESTRICT_SELECT_OFF')
                 box.label(text=f"In: {state.session_object_name}")
+                session_obj = bpy.data.objects.get(state.session_object_name)
+                if session_obj is not None:
+                    # Which mesh commits actually land in, and what's already in
+                    # it: if a retopology is visible in the viewport but this
+                    # says 0 faces, it belongs to a *different* result object
+                    # (e.g. the source was renamed/re-imported since) and can't
+                    # be re-edited from here.
+                    result = bpy.data.objects.get(mesh_build.result_object_name_for(session_obj))
+                    if result is not None:
+                        done = state.committed_patch_count
+                        box.label(text=f"→ {result.name}: {len(result.data.polygons)} faces, "
+                                       f"{done} patch(es)", icon='OUTLINER_OB_MESH')
+                        if done:
+                            box.label(text="Click a done patch to re-edit it", icon='FILE_REFRESH')
                 box.label(text="Esc: leave this object")
             else:
                 box.label(text="Adjust & commit", icon='TOOL_SETTINGS')
                 box.label(text=f"In: {state.session_object_name}")
             box.operator("retop.end_session", text="Stop Session", icon='X')
+
+        # A result mesh whose source object is gone can't be re-edited: commits
+        # for the renamed/re-imported object go to a new one, and the two show up
+        # as overlapping surfaces.
+        orphans = mesh_build.orphan_result_objects(context)
+        if orphans:
+            warn = layout.box().column(align=True)
+            warn.alert = True
+            warn.label(text="Retopology with no source object", icon='ERROR')
+            for orphan in orphans[:4]:
+                missing = orphan.name[:-len(mesh_build.RESULT_NAME_SUFFIX)]
+                warn.label(text=f"{orphan.name} — '{missing}' is gone")
+            warn.label(text="Rename it to <YourObject>_Retop to re-edit it.")
 
         # Patch data lives in the mesh itself (mesh["face_ids"]/["groups"]),
         # written at import time -- the Plasticity bridge does NOT need to stay
@@ -73,12 +100,45 @@ class VIEW3D_PT_retop(bpy.types.Panel):
 
         if state.active_face_id != -1:
             box = layout.box()
-            box.label(text=f"Face {state.active_face_id} — {state.generator_name} ({state.num_sides} sides)")
+            if state.generator_name == "Ring":
+                box.label(text=f"Face {state.active_face_id} — Ring "
+                               f"(2 loops, {state.num_sides} corners)")
+            else:
+                box.label(text=f"Face {state.active_face_id} — {state.generator_name} "
+                               f"({state.num_sides} sides)")
+
+            if state.num_loops > 2:
+                # More than one hole: the band generator handles two loops, not
+                # three, so only the outer boundary was used and the holes are
+                # simply covered over.
+                warn = box.column(align=True)
+                warn.alert = True
+                warn.label(text=f"{state.num_loops} boundary loops — holes ignored", icon='ERROR')
+                warn.label(text="Split the face in Plasticity to retop it.")
+
+            if state.editing_committed:
+                # Re-edit: the old patch has already been taken out of the
+                # result mesh, and Discard puts it back untouched.
+                info = box.column(align=True)
+                info.label(text="Re-editing a committed patch", icon='FILE_REFRESH')
+                if state.reedit_removed_faces:
+                    info.label(text=f"Old patch removed ({state.reedit_removed_faces} faces)")
+                    info.label(text="Discard restores it. Neighbours keep their spans.")
+                else:
+                    # Nothing was found to remove: committing would leave the old
+                    # geometry in place, overlapping the new grid.
+                    info.alert = True
+                    info.label(text="Could not find its old faces to remove", icon='ERROR')
+                    info.label(text="Committing will overlap the existing surface.")
 
             col = box.column(align=True)
             if state.generator_name in operators.TWO_SPAN_GENERATORS:
-                col.prop(state, "span_u", text="Span U" if state.generator_name == "Quad" else "Span (along)")
-                col.prop(state, "span_v", text="Span V" if state.generator_name == "Quad" else "Span (across)")
+                u_label, v_label = {
+                    "Quad": ("Span U", "Span V"),
+                    "Ring": ("Span (around)", "Span (across)"),
+                }.get(state.generator_name, ("Span (along)", "Span (across)"))
+                col.prop(state, "span_u", text=u_label)
+                col.prop(state, "span_v", text=v_label)
                 row = box.row(align=True)
                 row.label(text="Ctrl+wheel/keys adjust:")
                 row.prop(state, "span_axis", expand=True)
@@ -89,7 +149,9 @@ class VIEW3D_PT_retop(bpy.types.Panel):
             box.operator("retop.update_preview", text="Update Preview", icon='FILE_REFRESH')
 
             row = box.row(align=True)
-            row.operator("retop.commit_patch", text="Commit", icon='CHECKMARK')
+            row.operator("retop.commit_patch",
+                         text="Replace" if state.editing_committed else "Commit",
+                         icon='CHECKMARK')
             row.operator("retop.clear_preview", text="Discard", icon='X')
 
         body = _section(layout, state, "show_keybinds", "Keybinds", icon='EVENT_A')
@@ -97,7 +159,8 @@ class VIEW3D_PT_retop(bpy.types.Panel):
             col = body.column(align=True)
             for phase_label, binds in (
                 ("Pick an object", [("Click", "Enter object"), ("Esc", "End session")]),
-                ("Pick a surface", [("Click", "Pick surface"), ("Esc", "Leave object")]),
+                ("Pick a surface", [("Click", "Pick surface (again = re-edit)"),
+                                    ("Esc", "Leave object")]),
                 ("Adjust & commit", [
                     ("Ctrl+Scroll", "Span +/-"),
                     ("0-9", "Type span directly"),

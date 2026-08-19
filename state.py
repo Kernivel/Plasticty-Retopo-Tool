@@ -22,7 +22,21 @@ class RetopPatchState(bpy.types.PropertyGroup):
     active_face_id: bpy.props.IntProperty(name="Active Face Id", default=-1)
     generator_name: bpy.props.StringProperty(name="Generator", default="")
     num_sides: bpy.props.IntProperty(name="Num Sides", default=0)
+    # Boundary loops of the active patch: 1 is the usual case, 2 is a band
+    # (a face with a hole, or a tube) handled by the Ring generator, and more
+    # than 2 means only the outer boundary is used -- the panel says so.
+    num_loops: bpy.props.IntProperty(name="Boundary Loops", default=1)
     source_object_name: bpy.props.StringProperty(name="Source Object", default="")
+    # The active patch already existed in the result mesh: its geometry was
+    # taken out when it was picked (see mesh_build.remove_patch_from_result)
+    # and the snapshot below puts it back if the re-edit is discarded.
+    editing_committed: bpy.props.BoolProperty(name="Re-editing Committed Patch", default=False)
+    reedit_removed_faces: bpy.props.IntProperty(name="Faces Removed For Re-edit", default=0)
+    # Cached for the panel: counting committed patches walks the result mesh's
+    # face attribute, and the panel redraws on every mouse move during a session.
+    committed_patch_count: bpy.props.IntProperty(name="Committed Patches", default=0)
+    reedit_backup_mesh: bpy.props.StringProperty(name="Re-edit Snapshot", default="")
+    reedit_result_object: bpy.props.StringProperty(name="Re-edit Result Object", default="")
 
     span_u: bpy.props.IntProperty(name="Span U", default=4, min=1, soft_max=64, update=_live_update)
     span_v: bpy.props.IntProperty(name="Span V", default=4, min=1, soft_max=64, update=_live_update)

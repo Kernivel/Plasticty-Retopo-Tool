@@ -11,21 +11,66 @@ from . import overlay
 from . import state as state_mod
 
 
+class PreparedPatch:
+    """A patch's boundary, split into sides, one entry per boundary loop.
+
+    Most patches have a single loop. Two loops means a band: a face with a hole
+    in it, or a tube-like face with two rims -- see generators/ring.py. More
+    than two (several holes) isn't handled: only the outer loop is used, and
+    `num_loops` is what the panel warns from.
+    """
+
+    __slots__ = ("patch", "loops_sides", "loops_corner_ids", "num_loops")
+
+    def __init__(self, patch, loops_sides, loops_corner_ids, num_loops):
+        self.patch = patch
+        self.loops_sides = loops_sides  # [[side_points, ...], ...], outer loop first
+        self.loops_corner_ids = loops_corner_ids  # source vertex id per corner, same order
+        self.num_loops = num_loops
+
+    @property
+    def is_ring(self):
+        return len(self.loops_sides) == 2
+
+    @property
+    def sides(self):
+        """Sides of the outer loop -- what the single-loop generators take."""
+        return self.loops_sides[0]
+
+    @property
+    def corner_source_ids(self):
+        """Every corner, outer loop first, matching the order generators fill
+        GenerationResult.corner_local_indices in."""
+        return [vid for loop_ids in self.loops_corner_ids for vid in loop_ids]
+
+
 def _prepare_patch(mesh, face_id, angle_threshold, small_side_tolerance):
+    """Split patch `face_id`'s boundary into sides. Returns a PreparedPatch, or
+    None if the patch has no usable boundary.
+    """
     patches = patch_data.get_patches_with_boundaries(mesh)
     patch = patches.get(face_id)
     if patch is None or not patch.boundary_loops:
-        return None, None, None
+        return None
 
     positions = {v.index: v.co.copy() for v in mesh.vertices}
-    loop = patch.boundary_loops[0]
-    side_indices = sides_mod.split_into_sides(loop, positions, angle_threshold=angle_threshold)
-    side_indices = sides_mod.merge_small_sides(side_indices, positions, small_side_tolerance)
-    side_points = generators.base.resolve_side_points(side_indices, positions)
-    # corner k = first vertex of side k, in the same order generators use to
-    # fill GenerationResult.corner_local_indices
-    corner_source_ids = [side[0] for side in side_indices]
-    return patch, side_points, corner_source_ids
+    # Outer loop first: which loop comes out of compute_boundary_loops first is
+    # hash order, so without this a holed face can be retopped on its hole.
+    loops = patch_data.sort_loops_outer_first(patch.boundary_loops, positions)
+    num_loops = len(loops)
+    if num_loops > 2:
+        loops = loops[:1]  # several holes: fall back to the outer boundary alone
+
+    loops_sides = []
+    loops_corner_ids = []
+    for loop in loops:
+        side_indices = sides_mod.split_into_sides(loop, positions, angle_threshold=angle_threshold)
+        side_indices = sides_mod.merge_small_sides(side_indices, positions, small_side_tolerance)
+        loops_sides.append(generators.base.resolve_side_points(side_indices, positions))
+        # corner k = first vertex of side k
+        loops_corner_ids.append([side[0] for side in side_indices])
+
+    return PreparedPatch(patch, loops_sides, loops_corner_ids, num_loops)
 
 
 def _is_plasticity_mesh(obj):
@@ -81,6 +126,29 @@ def _propagated_defaults(obj, generator, corner_source_ids, defaults):
     return defaults, locked
 
 
+def register_spans_for(state, source_obj, prepared):
+    """Record the span used along each side of a just-committed patch, so
+    neighbouring patches pick it up (mesh_build's span registry).
+
+    A ring registers each of its two loops separately: pairing corners
+    cyclically across the whole flat list would invent a side running from the
+    outer boundary to the hole. Its per-side counts come from the generator's
+    own allocation, since "around" is one number spread over the sides.
+    """
+    if prepared.is_ring:
+        around = generators.ring.around_count(prepared.loops_sides, state.span_u)
+        for corner_ids, loop_sides in zip(prepared.loops_corner_ids, prepared.loops_sides):
+            lengths = [generators.ring.polyline_length(side) for side in loop_sides]
+            alloc = generators.ring.allocate_segments(lengths, around)
+            mesh_build.register_patch_spans(source_obj, corner_ids, alloc)
+        return
+
+    corner_ids = prepared.corner_source_ids
+    if corner_ids:
+        mesh_build.register_patch_spans(
+            source_obj, corner_ids, spans_per_side(state, len(corner_ids)))
+
+
 def spans_per_side(state, num_sides):
     """Span used along each side of the active patch, in boundary order --
     what gets recorded for propagation to neighbouring patches.
@@ -92,27 +160,70 @@ def spans_per_side(state, num_sides):
     return [state.span] * num_sides
 
 
+class PatchPreview:
+    """What _generate_for_face produced, so callers don't juggle a 6-tuple."""
+
+    __slots__ = ("generator", "num_sides", "num_loops", "spans", "corner_source_ids",
+                 "propagated", "committed")
+
+    def __init__(self, generator, num_sides, num_loops, spans, corner_source_ids,
+                 propagated, committed):
+        self.generator = generator
+        self.num_sides = num_sides
+        self.num_loops = num_loops  # boundary loops the patch has (2 = ring, >2 = unsupported)
+        self.spans = spans  # (span_u, span_v, span)
+        self.corner_source_ids = corner_source_ids
+        self.propagated = propagated  # span keys taken from a committed neighbour
+        self.committed = committed  # this patch is already in the result mesh (re-edit)
+
+
 def _generate_for_face(context, obj, face_id, span_overrides=None):
     """Shared core: prepare a patch, pick a generator, generate a result and
-    push it into the preview object. Returns (generator, num_sides, spans,
-    corner_source_ids, propagated_keys) on success, or (None, None, None,
-    None, None) on failure (nothing reported here -- callers report, since
-    CANCELLED vs. silently-ignored-during-hover differ).
+    push it into the preview object. Returns a PatchPreview on success, or None
+    on failure (nothing reported here -- callers report, since CANCELLED vs.
+    silently-ignored-during-hover differ).
     """
     state = context.scene.plasticity_retop
     mesh = obj.data
 
-    patch, side_points, corner_source_ids = _prepare_patch(
+    prepared = _prepare_patch(
         mesh, face_id, state.corner_angle_threshold, state.small_side_tolerance)
-    if patch is None:
-        return None, None, None, None, None
+    if prepared is None:
+        return None
 
-    generator = generators.find_generator(len(side_points))
-    if generator is None:
-        return None, None, None, None, None
+    corner_source_ids = prepared.corner_source_ids
+    if prepared.is_ring:
+        # Two boundary loops: fill the band between them instead of trying to
+        # treat one of the loops as if it were the whole patch boundary.
+        generator = generators.RING
+        generation_input = prepared.loops_sides
+        num_sides = len(corner_source_ids)
+        defaults = generator.default_spans(generation_input)
+        # Propagation is per side; a ring's "around" span is one number for the
+        # whole loop, so nothing is pulled in from neighbours here (it is still
+        # pushed out to them on commit).
+        propagated = []
+    else:
+        generation_input = prepared.sides
+        generator = generators.find_generator(len(generation_input))
+        if generator is None:
+            return None
+        num_sides = len(generation_input)
+        defaults = generator.default_spans(generation_input)
+        defaults, propagated = _propagated_defaults(obj, generator, corner_source_ids, defaults)
 
-    defaults = generator.default_spans(side_points)
-    defaults, propagated = _propagated_defaults(obj, generator, corner_source_ids, defaults)
+    # An already-committed patch comes back with the spans it was committed
+    # with -- they beat both the computed defaults and propagation, which would
+    # otherwise silently re-shape a patch the user had already tuned by hand.
+    committed = mesh_build.is_patch_committed(obj, face_id)
+    if committed:
+        stored = mesh_build.lookup_patch_settings(obj, face_id)
+        if stored:
+            for key in ("span_u", "span_v", "span"):
+                value = stored.get(key)
+                if isinstance(value, int) and value >= 1:
+                    defaults[key] = value
+
     span_u = defaults.get("span_u", state.span_u)
     span_v = defaults.get("span_v", state.span_v)
     span = defaults.get("span", state.span)
@@ -121,12 +232,14 @@ def _generate_for_face(context, obj, face_id, span_overrides=None):
         span_v = span_overrides.get("span_v", span_v)
         span = span_overrides.get("span", span)
 
-    bvh = geometry.build_bvh_for_polygons(mesh, patch.poly_indices) if state.reproject else None
+    bvh = (geometry.build_bvh_for_polygons(mesh, prepared.patch.poly_indices)
+           if state.reproject else None)
     span_settings = {"span_u": span_u, "span_v": span_v, "span": span}
-    result = generator.generate(side_points, span_settings, bvh=bvh)
+    result = generator.generate(generation_input, span_settings, bvh=bvh)
 
     mesh_build.update_preview_object(context, obj, result, corner_source_ids)
-    return generator, len(side_points), (span_u, span_v, span), corner_source_ids, propagated
+    return PatchPreview(generator, num_sides, prepared.num_loops, (span_u, span_v, span),
+                        corner_source_ids, propagated, committed)
 
 
 def regenerate_active_preview(context):
@@ -141,9 +254,66 @@ def regenerate_active_preview(context):
 
     obj = bpy.data.objects[state.source_object_name]
     span_overrides = {"span_u": state.span_u, "span_v": state.span_v, "span": state.span}
-    generator, num_sides, spans, corner_source_ids, propagated = _generate_for_face(
-        context, obj, state.active_face_id, span_overrides)
-    return generator is not None
+    return _generate_for_face(context, obj, state.active_face_id, span_overrides) is not None
+
+
+def update_committed_count(context, obj):
+    """Refresh the panel's cached "N patches done" figure. Called whenever the
+    result mesh changes, so the panel never has to walk it while redrawing.
+    """
+    state = context.scene.plasticity_retop
+    state.committed_patch_count = len(mesh_build.committed_face_ids(obj)) if obj else 0
+
+
+def begin_reedit(context, obj, face_id):
+    """Take patch `face_id`'s existing geometry out of the result mesh so the
+    re-edit rebuilds it from nothing, and remember the snapshot that puts it
+    back. Returns how many faces were removed.
+
+    Removing on pick rather than on commit is what makes a re-edit legible: the
+    old patch disappears the moment you click it, so "nothing was removed" shows
+    up immediately instead of surfacing as two overlapping surfaces afterwards.
+    """
+    state = context.scene.plasticity_retop
+    removed, backup = mesh_build.remove_patch_from_result(obj, face_id)
+    state.reedit_removed_faces = removed
+    state.reedit_backup_mesh = backup
+    state.reedit_result_object = mesh_build.result_object_name_for(obj) if backup else ""
+    update_committed_count(context, obj)
+    print(f"[Plasticity Retop] Re-editing patch {face_id} of '{obj.name}': "
+          f"removed {removed} existing face(s)")
+    if removed:
+        # Taking the patch out edits the result mesh and creates the snapshot
+        # datablock: both belong in an undo step of their own.
+        push_undo(f"Retop: re-edit patch {face_id}")
+    return removed
+
+
+def _clear_reedit(state):
+    state.editing_committed = False
+    state.reedit_removed_faces = 0
+    state.reedit_backup_mesh = ""
+    state.reedit_result_object = ""
+
+
+def keep_reedit_removal(context):
+    """The re-edit was committed: the snapshot of the old patch isn't needed."""
+    state = context.scene.plasticity_retop
+    if state.reedit_backup_mesh:
+        mesh_build.drop_result_snapshot(state.reedit_backup_mesh)
+    _clear_reedit(state)
+
+
+def restore_reedit_removal(context):
+    """Put back the patch a re-edit took out (discard, Esc, leaving the object,
+    ending the session): an uncommitted re-edit must never lose topology.
+    """
+    state = context.scene.plasticity_retop
+    if state.reedit_backup_mesh:
+        mesh_build.restore_result_snapshot(state.reedit_result_object, state.reedit_backup_mesh)
+        update_committed_count(context, bpy.data.objects.get(state.session_object_name)
+                               or bpy.data.objects.get(state.source_object_name))
+    _clear_reedit(state)
 
 
 def _is_own_scaffolding(obj):
@@ -299,17 +469,28 @@ def set_active_patch(context, obj, face_id):
     patch can't be generated. Shared by the viewport picker and by tests, so
     both go through exactly one code path.
     """
-    generator, num_sides, spans, _corner_source_ids, propagated = _generate_for_face(context, obj, face_id)
-    if generator is None:
+    # Same reason as in enter_session_object: claim untracked pre-existing
+    # retopology before deciding whether this patch is a re-edit. Cheap no-op
+    # once every face carries its patch id.
+    mesh_build.adopt_untracked_faces(obj)
+
+    # Generate first, remove second: _generate_for_face reads the result mesh to
+    # decide this is a re-edit and to recover the spans it was committed with.
+    preview = _generate_for_face(context, obj, face_id)
+    if preview is None:
         return None, None, None
 
     state = context.scene.plasticity_retop
     state.active_face_id = face_id
-    state.generator_name = generator.name
-    state.num_sides = num_sides
+    state.generator_name = preview.generator.name
+    state.num_sides = preview.num_sides
+    state.num_loops = preview.num_loops
     state.source_object_name = obj.name
-    state.span_u, state.span_v, state.span = spans
-    return generator.name, num_sides, propagated
+    state.span_u, state.span_v, state.span = preview.spans
+    state.editing_committed = preview.committed
+    if preview.committed:
+        begin_reedit(context, obj, face_id)
+    return preview.generator.name, preview.num_sides, preview.propagated
 
 
 class RETOP_OT_update_preview(bpy.types.Operator):
@@ -343,7 +524,9 @@ def session_is_running():
     return _SESSION_RUNNING
 
 
-TWO_SPAN_GENERATORS = {"Quad", "Wedge"}
+# Generators driven by two spans (Tab switches which one the wheel/keys adjust):
+# quad U/V, wedge along/across, ring around/across.
+TWO_SPAN_GENERATORS = {"Quad", "Wedge", "Ring"}
 
 # Number-row and numpad digits, for typing a span directly.
 DIGIT_KEYS = {}
@@ -372,7 +555,13 @@ def end_session(context):
     _SESSION_RUNNING = False
 
     state = context.scene.plasticity_retop
-    mesh_build.clear_preview_object()
+    # The one place the preview object is actually freed: ending the session is
+    # a deliberate moment, unlike a hover.
+    mesh_build.remove_preview_object()
+    overlay.hover_committed = False
+    # An in-flight re-edit is rolled back, never silently dropped: its patch was
+    # removed from the result mesh on pick and was never re-committed.
+    restore_reedit_removal(context)
 
     # Clear the state *before* refreshing: the look of every result mesh is
     # derived from session state, so refreshing first would just re-apply the
@@ -383,8 +572,25 @@ def end_session(context):
     state.active_face_id = -1
     state.generator_name = ""
     state.num_sides = 0
+    state.editing_committed = False
 
     mesh_build.refresh_result_appearance(context)
+    push_undo("Retop: end session")
+
+
+def push_undo(message):
+    """Give the objects a session just created their own undo step.
+
+    Datablocks created between two undo steps are invisible to the one Ctrl+Z
+    rolls back to, which is how the depsgraph ends up walking freed data. All
+    of the session's ID creation happens at the two moments that call this.
+    """
+    if bpy.app.background:
+        return  # no undo stack in --background, and the tests don't need one
+    try:
+        bpy.ops.ed.undo_push(message=message)
+    except Exception:
+        pass
 
 
 def enter_session_object(context, obj):
@@ -397,6 +603,18 @@ def enter_session_object(context, obj):
         mesh_build.set_result_highlight(context, previous, False)
 
     mesh_build.ensure_result_object(context, obj)
+    # Create the preview here too, rather than on the first hover: that keeps
+    # every datablock this session needs inside the single undo step below.
+    mesh_build.ensure_preview_object(context)
+    # Retopology committed before per-face patch tracking existed has to be
+    # claimed once, here, or its patches read as "never retopped": picking one
+    # would quietly build a second grid on top of the first instead of
+    # re-editing it.
+    mesh_build.adopt_untracked_faces(obj)
+    # Snapshots left by a re-edit that was undone, crashed or reloaded out from
+    # under us: they carry a fake user, so nothing else would ever collect them.
+    mesh_build.purge_stale_snapshots(keep_name=state.reedit_backup_mesh)
+    update_committed_count(context, obj)
     # Entering an object *is* being in a session: don't rely on the caller
     # having set this first, or the highlight below resolves against stale
     # state and the result mesh silently stays un-highlighted.
@@ -404,6 +622,7 @@ def enter_session_object(context, obj):
     state.session_object_name = obj.name
     state.session_phase = 'PATCH'
     mesh_build.set_result_highlight(context, obj, True)
+    push_undo(f"Retop: enter {obj.name}")
 
 
 def exit_session_object(context):
@@ -412,6 +631,7 @@ def exit_session_object(context):
     """
     state = context.scene.plasticity_retop
     mesh_build.clear_preview_object()
+    restore_reedit_removal(context)  # same rule as end_session
 
     # Same ordering rule as end_session: state first, then refresh.
     state.session_object_name = ""
@@ -435,7 +655,9 @@ class RETOP_OT_session(bpy.types.Operator):
     _hover_face_id = None
     _hover_generator_name = None
     _hover_num_sides = None
+    _hover_num_loops = 1
     _hover_spans = None
+    _hover_committed = False
     _timer = None
     _typed = ""  # digits typed so far for direct span entry
 
@@ -444,7 +666,8 @@ class RETOP_OT_session(bpy.types.Operator):
         'OBJECT': ('EYEDROPPER',
                    "Pick an object   |   Click: enter a Plasticity object   |   Esc: end session"),
         'PATCH': ('PAINT_CROSS',
-                  "Pick a surface   |   Click: choose a patch   |   Esc: leave this object"),
+                  "Pick a surface   |   Click: choose a patch (an already retopped one to "
+                  "re-edit it)   |   Esc: leave this object"),
         'ADJUST': ('DEFAULT',
                    "Adjust spans in the Retop panel   |   Enter: commit   |   Esc: discard"),
     }
@@ -458,20 +681,26 @@ class RETOP_OT_session(bpy.types.Operator):
             context.workspace.status_text_set(f"Retop — {status}")
 
     def _set_hover(self, context, obj, face_id):
-        generator, num_sides, spans, corner_source_ids, propagated = _generate_for_face(context, obj, face_id)
-        if generator is None:
+        preview = _generate_for_face(context, obj, face_id)
+        if preview is None:
             return False
         self._hover_obj = obj
         self._hover_face_id = face_id
-        self._hover_generator_name = generator.name
-        self._hover_num_sides = num_sides
-        self._hover_spans = spans
+        self._hover_generator_name = preview.generator.name
+        self._hover_num_sides = preview.num_sides
+        self._hover_num_loops = preview.num_loops
+        self._hover_spans = preview.spans
+        self._hover_committed = preview.committed
+        # so the overlay can advertise "Re-edit patch" instead of "Pick surface"
+        overlay.hover_committed = preview.committed
         return True
 
     def _clear_hover(self, context):
         mesh_build.clear_preview_object()
         self._hover_obj = None
         self._hover_face_id = None
+        self._hover_committed = False
+        overlay.hover_committed = False
 
     def _keeps_current_hover(self, context, event, new_distance):
         """True when the currently-hovered patch is still under the cursor at
@@ -508,7 +737,7 @@ class RETOP_OT_session(bpy.types.Operator):
 
     def _commit(self, context):
         self._flush_typed_span(context)
-        if bpy.data.objects.get(mesh_build.PREVIEW_OBJ_NAME) is not None:
+        if mesh_build.has_preview():
             bpy.ops.retop.commit_patch()
         self._set_typed("")
 
@@ -710,12 +939,25 @@ class RETOP_OT_session(bpy.types.Operator):
             state.active_face_id = self._hover_face_id
             state.generator_name = self._hover_generator_name
             state.num_sides = self._hover_num_sides
+            state.num_loops = self._hover_num_loops
             state.source_object_name = self._hover_obj.name
             state.span_u, state.span_v, state.span = self._hover_spans
+            state.editing_committed = self._hover_committed
             state.session_phase = 'ADJUST'
             self._set_typed("")
             self._apply_phase_ui(context)
-            self.report({'INFO'}, f"Patch {self._hover_face_id} ({self._hover_generator_name})")
+
+            if self._hover_committed:
+                # The hover preview already holds the regenerated grid, so the
+                # old geometry can go now -- no need to rebuild anything.
+                removed = begin_reedit(context, self._hover_obj, self._hover_face_id)
+                self.report(
+                    {'INFO'} if removed else {'WARNING'},
+                    f"Re-editing patch {self._hover_face_id} "
+                    f"({self._hover_generator_name}) — removed {removed} old face(s)")
+            else:
+                self.report({'INFO'},
+                            f"Patch {self._hover_face_id} ({self._hover_generator_name})")
             return {'RUNNING_MODAL'}
 
         if event.type == 'ESC' and event.value == 'PRESS':
@@ -735,6 +977,7 @@ class RETOP_OT_session(bpy.types.Operator):
         state = context.scene.plasticity_retop
         self._hover_obj = None
         self._hover_face_id = None
+        self._hover_committed = False
 
         # Clear anything a previous, interrupted session left behind.
         end_session(context)
@@ -789,27 +1032,36 @@ class RETOP_OT_commit_patch(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         state = context.scene.plasticity_retop
-        return (bpy.data.objects.get(mesh_build.PREVIEW_OBJ_NAME) is not None
-                and state.source_object_name in bpy.data.objects)
+        return mesh_build.has_preview() and state.source_object_name in bpy.data.objects
 
     def execute(self, context):
         state = context.scene.plasticity_retop
         source_obj = bpy.data.objects[state.source_object_name]
+        face_id = state.active_face_id
+        replacing = state.editing_committed
 
         # Recompute this patch's corner ids so their spans can be registered
         # for propagation to future neighboring patches (cheap: same lookup
         # generation already does, just no need to regenerate geometry here).
-        _patch, _side_points, corner_source_ids = _prepare_patch(
-            source_obj.data, state.active_face_id, state.corner_angle_threshold, state.small_side_tolerance)
+        prepared = _prepare_patch(
+            source_obj.data, face_id, state.corner_angle_threshold, state.small_side_tolerance)
 
-        result_obj, error = mesh_build.commit_preview_to_result(context, source_obj)
+        # Passing the face id is what lets a re-committed patch replace its own
+        # previous faces instead of stacking a second grid on top of them.
+        result_obj, error = mesh_build.commit_preview_to_result(context, source_obj, face_id=face_id)
         if error:
             self.report({'WARNING'}, error)
             return {'CANCELLED'}
 
-        if corner_source_ids:
-            mesh_build.register_patch_spans(
-                source_obj, corner_source_ids, spans_per_side(state, len(corner_source_ids)))
+        if prepared is not None:
+            register_spans_for(state, source_obj, prepared)
+        mesh_build.register_patch_settings(
+            source_obj, face_id, state.span_u, state.span_v, state.span, state.generator_name)
+
+        # The old patch was taken out when it was picked; now that the new
+        # version is in, its snapshot can go.
+        keep_reedit_removal(context)
+        update_committed_count(context, source_obj)
 
         # Note: the result highlight is owned by the session (it stays on for
         # as long as you're inside this object), so it is deliberately NOT
@@ -819,7 +1071,8 @@ class RETOP_OT_commit_patch(bpy.types.Operator):
         state.generator_name = ""
         state.num_sides = 0
 
-        self.report({'INFO'}, f"Committed patch into {result_obj.name}")
+        verb = "Replaced" if replacing else "Committed"
+        self.report({'INFO'}, f"{verb} patch {face_id} in {result_obj.name}")
         return {'FINISHED'}
 
 
@@ -831,11 +1084,17 @@ class RETOP_OT_clear_preview(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return bpy.data.objects.get(mesh_build.PREVIEW_OBJ_NAME) is not None
+        state = context.scene.plasticity_retop
+        # Also available with an empty preview while a re-edit is open, so its
+        # removal can still be rolled back.
+        return mesh_build.has_preview() or state.editing_committed
 
     def execute(self, context):
         mesh_build.clear_preview_object()
         state = context.scene.plasticity_retop
+        # Discarding a re-edit puts the patch that was taken out on pick back
+        # exactly as it was, so Esc can never lose committed topology.
+        restore_reedit_removal(context)
         # Highlight stays on while the session is inside this object; clearing
         # active_face_id sends a running session back to picking a surface.
         state.active_face_id = -1
@@ -864,7 +1123,17 @@ def _perform_reload():
         mesh_build as mesh_build_mod,
         overlay as overlay_mod,
     )
-    from .generators import base as gen_base_mod, quad as gen_quad_mod, triangle as gen_triangle_mod
+    # Every generator submodule, not a hand-picked few: reloading the package
+    # re-runs its imports but those resolve out of sys.modules, so a submodule
+    # left out here silently keeps running its old code after a reload.
+    from .generators import (
+        base as gen_base_mod,
+        quad as gen_quad_mod,
+        triangle as gen_triangle_mod,
+        wedge as gen_wedge_mod,
+        nside as gen_nside_mod,
+        ring as gen_ring_mod,
+    )
 
     # Reloading unregisters the session operator's class, which kills any
     # running modal without it ever reaching _finish. Tear the session down
@@ -888,6 +1157,9 @@ def _perform_reload():
     importlib.reload(gen_base_mod)
     importlib.reload(gen_quad_mod)
     importlib.reload(gen_triangle_mod)
+    importlib.reload(gen_wedge_mod)
+    importlib.reload(gen_nside_mod)
+    importlib.reload(gen_ring_mod)
     importlib.reload(generators_mod)
     importlib.reload(mesh_build_mod)
     importlib.reload(overlay_mod)
@@ -920,6 +1192,60 @@ class RETOP_OT_reload_addon(bpy.types.Operator):
         return {'FINISHED'}
 
 
+@bpy.app.handlers.persistent
+def _on_undo_redo(scene, _depsgraph=None):
+    """Bring session state back in line with what undo just restored.
+
+    An undo step can put the result mesh back to a state that has nothing to do
+    with the patch currently open: the faces a re-edit removed may be back, the
+    snapshot taken to restore them may be gone, the object being retopped may
+    not exist any more. Anything acted on afterwards would be acting on stale
+    references, so the active patch is simply dropped and the session returns to
+    picking.
+
+    Deliberately touches scene properties only -- no datablock is created,
+    freed or edited from a handler.
+    """
+    state = getattr(scene, "plasticity_retop", None)
+    if state is None:
+        return
+
+    state.active_face_id = -1
+    state.generator_name = ""
+    state.num_sides = 0
+    state.num_loops = 1
+    # The snapshot belongs to a mesh state undo has just replaced; restoring it
+    # later would overwrite whatever the user undid back to.
+    state.editing_committed = False
+    state.reedit_removed_faces = 0
+    state.reedit_backup_mesh = ""
+    state.reedit_result_object = ""
+
+    if state.session_active:
+        session_obj = bpy.data.objects.get(state.session_object_name)
+        if session_obj is None:
+            state.session_object_name = ""
+            state.session_phase = 'OBJECT'
+            state.committed_patch_count = 0
+        elif state.session_phase == 'ADJUST':
+            state.session_phase = 'PATCH'
+
+
+def _register_handlers():
+    _unregister_handlers()  # never stack duplicates across an addon reload
+    bpy.app.handlers.undo_post.append(_on_undo_redo)
+    bpy.app.handlers.redo_post.append(_on_undo_redo)
+
+
+def _unregister_handlers():
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        for handler in list(handlers):
+            # By name: a module reload leaves the previous function object
+            # registered, and it is no longer identical to this one.
+            if getattr(handler, "__name__", "") == "_on_undo_redo":
+                handlers.remove(handler)
+
+
 CLASSES = (
     RETOP_OT_update_preview,
     RETOP_OT_session,
@@ -933,6 +1259,7 @@ CLASSES = (
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
+    _register_handlers()
 
 
 def unregister():
@@ -940,5 +1267,6 @@ def unregister():
     # mid-session); leaving its draw handler behind would leak an overlay that
     # nothing can remove afterwards.
     overlay.disable()
+    _unregister_handlers()
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

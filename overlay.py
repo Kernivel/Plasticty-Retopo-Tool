@@ -21,11 +21,16 @@ TYPED_COLOR = (1.0, 0.72, 0.25, 1.0)
 # Kept in sync with operators.TWO_SPAN_GENERATORS; duplicated rather than
 # imported so the draw handler never pulls in the operators module (which
 # imports this one).
-TWO_SPAN_GENERATOR_NAMES = {"Quad", "Wedge"}
+TWO_SPAN_GENERATOR_NAMES = {"Quad", "Wedge", "Ring"}
 
 # Set by the session modal while digits are being typed, so the overlay can
 # echo them back like Blender's own numeric input.
 typed_span = ""
+
+# Set by the session modal when the patch under the cursor has already been
+# committed, so the hint reads "Re-edit patch" -- clicking it reopens it with
+# the spans it was built with instead of starting a fresh one.
+hover_committed = False
 
 
 def keybinds_for(state):
@@ -38,11 +43,14 @@ def keybinds_for(state):
         ]
     if phase == 'PATCH':
         return [
-            ("Click", "Pick surface"),
+            ("Click", "Re-edit patch" if hover_committed else "Pick surface"),
             ("Esc", "Leave object"),
         ]
 
     # ADJUST
+    # getattr: this runs inside a draw handler, which can fire in the middle of
+    # a reload when the scene still carries the previous property group.
+    commit_label = "Replace patch" if getattr(state, "editing_committed", False) else "Commit"
     binds = [
         ("Ctrl+Scroll", "Span +/-"),
         ("0-9", "Type span"),
@@ -50,8 +58,8 @@ def keybinds_for(state):
     if state.generator_name in TWO_SPAN_GENERATOR_NAMES:
         binds.append(("Tab", f"U/V direction (now {state.span_axis})"))
     binds.extend([
-        ("R-Click", "Commit"),
-        ("Enter", "Commit"),
+        ("R-Click", commit_label),
+        ("Enter", commit_label),
         ("Esc", "Discard"),
     ])
     return binds

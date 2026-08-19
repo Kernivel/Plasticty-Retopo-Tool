@@ -152,8 +152,13 @@ check("commit_patch (A) FINISHED", res == {'FINISHED'}, str(res))
 
 result_obj = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
 check("result object exists after commit (A)", result_obj is not None)
-check("preview object removed after commit (A)",
-      bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME) is None)
+# The preview object deliberately outlives a commit, emptied rather than freed:
+# creating and freeing datablocks between undo steps is what made Ctrl+Z crash
+# Blender. Only ending the session frees it.
+check("preview is emptied after commit (A), not freed", not pr.mesh_build.has_preview(),
+      str(pr.mesh_build.has_preview()))
+check("the preview object itself survives the commit",
+      bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME) is not None)
 faces_after_a = len(result_obj.data.polygons) if result_obj else 0
 check("result face count == patch A faces", faces_after_a == expected_faces_a,
       f"expected {expected_faces_a}, got {faces_after_a}")
@@ -213,6 +218,173 @@ check("result face count == patch A + patch B faces",
       total_faces == expected_faces_a + expected_faces_b,
       f"expected {expected_faces_a + expected_faces_b}, got {total_faces}")
 
+# ---------------------------------------------------------------------------
+# Re-selecting an already-committed patch: it must come back with the spans it
+# was committed with, and committing again must REPLACE its faces instead of
+# stacking a second grid on top of them.
+# ---------------------------------------------------------------------------
+check("committed patches are tracked on the result mesh",
+      pr.mesh_build.committed_face_ids(obj) == {101, 202},
+      str(pr.mesh_build.committed_face_ids(obj)))
+check("an uncommitted face id isn't reported as committed",
+      not pr.mesh_build.is_patch_committed(obj, 999))
+
+faces_before_reedit = len(result_obj.data.polygons)
+
+# Patch A was committed at 4x4; pick it again with the panel's spans left on
+# something else entirely, and it must restore its own 4/4.
+state.span_u = 9
+state.span_v = 7
+gen_name_re, _n_re, _prop_re = activate_patch(obj, 0)
+check("re-selecting a committed patch resolves its generator", gen_name_re == "Quad", str(gen_name_re))
+check("re-selecting flags the patch as a re-edit", state.editing_committed, str(state.editing_committed))
+check("re-selecting restores the spans it was committed with",
+      state.span_u == 4 and state.span_v == 4, f"span_u={state.span_u}, span_v={state.span_v}")
+
+preview_obj = bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME)
+check("re-selecting rebuilds the preview at the stored spans",
+      preview_obj is not None and len(preview_obj.data.polygons) == 16,
+      f"got {len(preview_obj.data.polygons) if preview_obj else 'N/A'}")
+
+# Picking it takes the old geometry out straight away, so the viewport shows the
+# patch being rebuilt instead of a second grid stacked on the first.
+check("re-selecting removes the old patch's faces on the spot",
+      state.reedit_removed_faces == expected_faces_a
+      and len(result_obj.data.polygons) == faces_before_reedit - expected_faces_a,
+      f"removed={state.reedit_removed_faces}, faces={len(result_obj.data.polygons)} "
+      f"(expected {faces_before_reedit - expected_faces_a})")
+check("a re-edit keeps a snapshot to restore from", state.reedit_backup_mesh != "",
+      state.reedit_backup_mesh)
+
+# Discarding must put it back exactly as it was.
+_backup_name = state.reedit_backup_mesh
+bpy.ops.retop.clear_preview()
+check("discarding a re-edit restores the committed patch",
+      len(result_obj.data.polygons) == faces_before_reedit,
+      f"expected {faces_before_reedit}, got {len(result_obj.data.polygons)}")
+check("discarding a re-edit clears the re-edit flag", not state.editing_committed)
+check("the restored patch is still tracked", pr.mesh_build.committed_face_ids(obj) == {101, 202},
+      str(pr.mesh_build.committed_face_ids(obj)))
+check("the snapshot mesh is not left behind", bpy.data.meshes.get(_backup_name) is None
+      or bpy.data.meshes.get(_backup_name) is result_obj.data,
+      str(_backup_name))
+# result_obj.data is swapped by the restore, so re-resolve it before going on.
+result_obj = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
+
+# Now really change patch A's span and commit: A's 16 faces are replaced by
+# 2x4=8, and patch B's faces are untouched.
+activate_patch(obj, 0)
+state.span_u = 2
+state.span_v = 4
+res = bpy.ops.retop.commit_patch()
+check("re-committing a patch FINISHED", res == {'FINISHED'}, str(res))
+check("committing a re-edit drops the snapshot", state.reedit_backup_mesh == "",
+      state.reedit_backup_mesh)
+expected_after_replace = faces_before_reedit - expected_faces_a + (2 * 4)
+check("re-committing replaces the patch instead of duplicating it",
+      len(result_obj.data.polygons) == expected_after_replace,
+      f"expected {expected_after_replace}, got {len(result_obj.data.polygons)}")
+check("both patches are still tracked after a replace",
+      pr.mesh_build.committed_face_ids(obj) == {101, 202},
+      str(pr.mesh_build.committed_face_ids(obj)))
+check("committing clears the re-edit flag", not state.editing_committed)
+
+stored = pr.mesh_build.lookup_patch_settings(obj, 101)
+check("the new spans are stored for the next re-edit",
+      stored is not None and stored["span_u"] == 2 and stored["span_v"] == 4, str(stored))
+
+check("no face is left without a patch id",
+      pr.mesh_build.NO_PATCH not in pr.mesh_build._patch_ids_of_faces(result_obj.data))
+
+# Restore patch A to 4x4 so the checks further down see the original layout.
+activate_patch(obj, 0)
+state.span_u = 4
+state.span_v = 4
+bpy.ops.retop.commit_patch()
+check("patch A restored to its original span",
+      len(result_obj.data.polygons) == faces_before_reedit,
+      f"expected {faces_before_reedit}, got {len(result_obj.data.polygons)}")
+
+# Removing a patch's faces must take its own vertices with them (and only
+# those): a wrong delete context leaves the old grid's interior points behind
+# as loose vertices.
+_used_verts = set()
+for _poly in result_obj.data.polygons:
+    _used_verts.update(_poly.vertices)
+_loose = [v.index for v in result_obj.data.vertices if v.index not in _used_verts]
+check("the result mesh has no loose vertices after a replace", not _loose, str(_loose[:8]))
+
+
+# ---------------------------------------------------------------------------
+# Legacy result meshes: retopology committed before per-face patch tracking has
+# no patch ids, so its patches would read as "never retopped" and a re-edit
+# would stack a second grid on top. Entering the object claims them by
+# geometry (adopt_untracked_faces) so re-editing replaces them like any other.
+# ---------------------------------------------------------------------------
+def _faces_per_patch(result_obj):
+    counts = {}
+    for fid in pr.mesh_build._patch_ids_of_faces(result_obj.data):
+        counts[fid] = counts.get(fid, 0) + 1
+    return counts
+
+
+tracked_before = _faces_per_patch(result_obj)
+
+# Strip the tracking to reproduce a mesh committed by an older version.
+result_obj.data.attributes.remove(result_obj.data.attributes[pr.mesh_build.PATCH_ID_ATTR])
+del result_obj[pr.mesh_build.PATCH_SPANS_PROP]
+check("a legacy result mesh reports nothing as committed",
+      pr.mesh_build.committed_face_ids(obj) == set(),
+      str(pr.mesh_build.committed_face_ids(obj)))
+
+adopted = pr.mesh_build.adopt_untracked_faces(obj)
+check("adoption claims every pre-existing face",
+      adopted == len(result_obj.data.polygons), f"{adopted} of {len(result_obj.data.polygons)}")
+check("adoption puts each face back on the patch it came from",
+      _faces_per_patch(result_obj) == tracked_before,
+      f"{_faces_per_patch(result_obj)} vs {tracked_before}")
+check("adopted patches are re-editable", pr.mesh_build.committed_face_ids(obj) == {101, 202},
+      str(pr.mesh_build.committed_face_ids(obj)))
+check("re-running adoption is a no-op", pr.mesh_build.adopt_untracked_faces(obj) == 0)
+
+# An adopted patch has no stored spans (the old version never wrote any), so it
+# reopens on propagated/computed defaults -- but it must still be a re-edit, and
+# committing must still replace it rather than duplicate it.
+faces_before_legacy_reedit = len(result_obj.data.polygons)
+activate_patch(obj, 0)
+check("an adopted patch is flagged as a re-edit", state.editing_committed, str(state.editing_committed))
+state.span_u = 3
+state.span_v = 3
+bpy.ops.retop.commit_patch()
+expected_legacy = faces_before_legacy_reedit - tracked_before[101] + 9
+check("re-committing an adopted patch replaces it",
+      len(result_obj.data.polygons) == expected_legacy,
+      f"expected {expected_legacy}, got {len(result_obj.data.polygons)}")
+
+# Put patch A back to 4x4 for the checks that follow.
+activate_patch(obj, 0)
+state.span_u = 4
+state.span_v = 4
+bpy.ops.retop.commit_patch()
+check("patch A back to its original span after the legacy round-trip",
+      len(result_obj.data.polygons) == faces_before_legacy_reedit,
+      f"expected {faces_before_legacy_reedit}, got {len(result_obj.data.polygons)}")
+
+# Ending the session (or the addon reloading) in the middle of a re-edit must
+# roll it back too, not leave the patch missing from the result mesh.
+activate_patch(obj, 0)
+check("a re-edit in flight has taken the patch out",
+      len(result_obj.data.polygons) < faces_before_legacy_reedit,
+      f"faces={len(result_obj.data.polygons)}")
+pr.operators.end_session(bpy.context)
+result_obj = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
+check("ending the session mid-re-edit restores the patch",
+      len(result_obj.data.polygons) == faces_before_legacy_reedit,
+      f"expected {faces_before_legacy_reedit}, got {len(result_obj.data.polygons)}")
+check("no re-edit snapshot survives the session",
+      state.reedit_backup_mesh == "" and not state.editing_committed,
+      f"backup='{state.reedit_backup_mesh}', flag={state.editing_committed}")
+
 check("result rests when no session owns it (opaque, no in-front/wire)",
       result_obj is not None and not result_obj.show_in_front and not result_obj.show_wire
       and abs(result_obj.color[3] - 1.0) < 1e-6,
@@ -227,6 +399,8 @@ pr.operators.enter_session_object(bpy.context, obj)
 check("entering an object marks the session active", state.session_active, str(state.session_active))
 check("entering an object moves to the PATCH phase", state.session_phase == 'PATCH', state.session_phase)
 check("entering an object records it", state.session_object_name == obj.name, state.session_object_name)
+check("entering an object caches how many patches are done for the panel",
+      state.committed_patch_count == 2, str(state.committed_patch_count))
 
 result_obj = bpy.data.objects.get(pr.mesh_build.result_object_name_for(obj))
 check("entering an object highlights its result mesh",
@@ -252,6 +426,38 @@ pr.operators.end_session(bpy.context)
 check("ending the session clears session state",
       not state.session_active and state.session_object_name == "" and state.active_face_id == -1,
       f"active={state.session_active}, obj='{state.session_object_name}'")
+check("ending the session is what frees the preview object",
+      bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME) is None)
+
+# --- undo safety: the handler that runs after Ctrl+Z drops the active patch
+# and any re-edit snapshot, since undo has just replaced the mesh state both
+# were describing. It must touch scene state only. ---
+pr.operators.enter_session_object(bpy.context, obj)
+activate_patch(obj, 0)
+meshes_before_undo = len(bpy.data.meshes)
+pr.operators._on_undo_redo(bpy.context.scene)
+check("undo drops the active patch", state.active_face_id == -1, str(state.active_face_id))
+check("undo drops the re-edit snapshot",
+      not state.editing_committed and state.reedit_backup_mesh == "",
+      f"flag={state.editing_committed}, backup='{state.reedit_backup_mesh}'")
+check("undo returns an adjusting session to picking", state.session_phase == 'PATCH',
+      state.session_phase)
+check("the undo handler creates or frees nothing", len(bpy.data.meshes) == meshes_before_undo,
+      f"{meshes_before_undo} -> {len(bpy.data.meshes)}")
+check("the undo handler is registered",
+      any(getattr(h, "__name__", "") == "_on_undo_redo" for h in bpy.app.handlers.undo_post))
+pr.operators.end_session(bpy.context)
+
+# A re-edit snapshot orphaned by that undo carries a fake user, so nothing but
+# this collects it -- and entering an object is where it happens.
+_orphan = result_obj.data.copy()
+_orphan.name = f"Whatever{pr.mesh_build.SNAPSHOT_NAME_SUFFIX}"
+_orphan.use_fake_user = True
+pr.operators.enter_session_object(bpy.context, obj)
+check("entering an object purges orphaned re-edit snapshots",
+      not any(m.name.endswith(pr.mesh_build.SNAPSHOT_NAME_SUFFIX) for m in bpy.data.meshes),
+      str([m.name for m in bpy.data.meshes]))
+pr.operators.end_session(bpy.context)
 
 # ---------------------------------------------------------------------------
 # Keybind plumbing: which span the wheel drives, Tab switching U/V, and the

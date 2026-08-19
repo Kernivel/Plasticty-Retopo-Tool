@@ -148,6 +148,29 @@ def project_points_to_surface(points, bvh, max_distance=1e6):
     return result
 
 
+def build_bvh_with_polygon_map(mesh):
+    """BVH over every polygon of `mesh` (local object space), plus a list
+    mapping each BVH triangle index back to the polygon it came from.
+
+    BVHTree.FromPolygons reports the index of the triangle it hit, and
+    fan-triangulating a polygon emits several triangles, so the caller needs
+    that map to get back to a polygon (and from there to a Plasticity face id).
+    """
+    from mathutils.bvhtree import BVHTree
+
+    verts = [v.co.copy() for v in mesh.vertices]
+    tris = []
+    tri_poly = []
+
+    for poly in mesh.polygons:
+        loop_verts = list(poly.vertices)
+        for i in range(1, len(loop_verts) - 1):
+            tris.append((loop_verts[0], loop_verts[i], loop_verts[i + 1]))
+            tri_poly.append(poly.index)
+
+    return BVHTree.FromPolygons(verts, tris), tri_poly
+
+
 def build_bvh_for_polygons(mesh, poly_indices):
     """Build a BVHTree restricted to the given polygons of `mesh`, in the
     mesh's local object space.

@@ -7,9 +7,14 @@ of faces (tuples of indices into that vert list, each face a tri or quad).
 
 
 class GenerationResult:
-    __slots__ = ("verts", "faces", "uvs", "corner_local_indices", "boundary_local_indices")
+    __slots__ = ("verts", "faces", "uvs", "corner_local_indices", "boundary_local_indices",
+                 "side_allocation")
 
     def __init__(self, verts, faces, uvs=None, corner_local_indices=None, boundary_local_indices=None):
+        # How many segments each side got, per boundary loop -- only the Ring
+        # generator sets it (it spreads one "around" count over the sides
+        # itself, so the commit path can't recompute it from a single span).
+        self.side_allocation = None
         self.verts = verts  # list[Vector], local/object space
         self.faces = faces  # list[tuple[int, ...]]
         self.uvs = uvs if uvs is not None else [(0.0, 0.0)] * len(verts)  # list[(u, v)], one per vert

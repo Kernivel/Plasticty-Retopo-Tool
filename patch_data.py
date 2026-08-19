@@ -168,6 +168,28 @@ def compute_boundary_loops(mesh, patch, face_id_of_poly, weld_map=None):
     return loops
 
 
+def loop_extent(loop, positions):
+    """Bounding-box diagonal of a boundary loop, in the mesh's own units."""
+    if not loop:
+        return 0.0
+    xs = [positions[vi] for vi in loop]
+    lo = [min(p[axis] for p in xs) for axis in range(3)]
+    hi = [max(p[axis] for p in xs) for axis in range(3)]
+    return sum((hi[axis] - lo[axis]) ** 2 for axis in range(3)) ** 0.5
+
+
+def sort_loops_outer_first(loops, positions):
+    """Order a patch's boundary loops with the outer one first.
+
+    compute_boundary_loops walks a *set* of half-edges, so the order it returns
+    depends on hash iteration -- on a patch with a hole, "the first loop" could
+    just as easily be the hole. Anything picking a single loop must go through
+    here, or it silently retopologizes the hole instead of the face. The outer
+    boundary is the one enclosing the others, so it has the largest extent.
+    """
+    return sorted(loops, key=lambda loop: loop_extent(loop, positions), reverse=True)
+
+
 def get_patches_with_boundaries(mesh, weld_epsilon=1e-5):
     """Convenience: build patches and compute their boundary loop(s), using a
     position-based vertex weld so unmerged bridge triangle soups still yield
