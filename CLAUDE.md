@@ -27,10 +27,17 @@ synthetic meshes carrying the same custom properties the bridge writes.
 
 After deploying, use the panel's **Reload Addon Only** button — plain
 "Reload Scripts" can silently half-fail when another installed addon errors
-during its own reload.
+during its own reload. A reload that leaves a module stale is the one failure
+the version string cannot report; see the reload invariant below.
 
 Bump `version.py` (`ADDON_VERSION` / `BUILD_ID`) on every change: the panel
 shows it, and it's the only reliable way to confirm a reload actually took.
+The panel also compares the constants Python holds in memory against what
+`version.py` reads *on disk* (`version.stale_load()`) and says so in red when
+they differ — that is the "I deployed and nothing changed" state, and the
+tracebacks it produces cite line numbers that don't match the file you're
+reading. Diagnose that mismatch before anything else. It only works if the
+version was bumped, which is the discipline above.
 
 ## Input data contract
 
@@ -42,6 +49,20 @@ The bridge writes two custom properties on each imported mesh:
 One Plasticity face = one **patch**. The bridge is only needed at import time;
 nothing here talks to it at runtime.
 
+**That is the whole of it — there is no edge data.** The wire protocol carries
+`vertices, faces, normals, groups, face_ids` and nothing else (verified in the
+bridge's `client.decode_object_data` / `handler.py`), so no edge ids and no
+"this segment is a real CAD edge" flag. What the bridge *does* also apply is
+Plasticity's own per-loop normals, as custom split normals with
+`use_smooth = True` everywhere — the true surface normals, not facet ones.
+
+The equivalent of edge identity is derivable anyway, from `face_ids` alone:
+along a patch's boundary, each half-edge's opposite polygon names the
+*neighbouring* patch, and the vertex where that neighbour changes is a genuine
+B-rep vertex — the junction between two CAD edges. That is what
+`patch_data.build_directed_owners` / `boundary_neighbours_for_loop` recover,
+and what the topological corner detector runs on.
+
 **The bridge exports unwelded triangle soups** — vertices are not shared, even
 between two triangles of the same face. Any topology work must first go through
 `patch_data.build_weld_map()` (position-based KDTree merge). Skipping it makes
@@ -51,23 +72,54 @@ every internal triangulation edge look like a patch boundary.
 
 | Module | Role |
 |---|---|
-| `patch_data.py` | mesh → patches, weld map, boundary loops |
-| `sides.py` | corner detection (angle threshold), split loop into sides, merge small sides |
+| `constants.py` | generator names and the sets built from them; imports nothing, so `overlay` can share them with `operators` |
+| `patch_data.py` | mesh → patches, weld map, boundary loops, **and the per-mesh cache all of that lives in** (`analyse`) |
+| `sides.py` | corner detection (angle and/or topology), corner *ranking*, split loop into sides, merge small sides |
 | `geometry.py` | Coons/transfinite grids, arc-length resampling, BVH, reprojection |
 | `generators/` | one generator per patch type; `find_generator(n_sides)` picks the first match |
-| `mesh_build.py` | preview object, committing into `<Source>_Retop`, span registry, appearance |
+| `cad_display.py` | B-rep edges/vertices recovered from `face_ids`, and the derived surface flow — cached, for the overlay |
+| `patchprep.py` | one face → `PreparedPatch`: corners resolved, boundary split into sides, planarity |
+| `sidematch.py` | side references, what each may match, pin kinds, span-collision resolution, substitution |
+| `mesh_build.py` | preview object, committing into `<Source>_Retop`, span registry, committed-boundary cache, appearance, shading, collection mirroring |
 | `operators.py` | the session modal + commit/discard/reload operators |
-| `overlay.py` | bottom-right keybind hints (GPU draw handler) |
+| `overlay.py` | keybind hints (POST_PIXEL) + every kind of dot; side highlight and CAD structure lines (POST_VIEW) |
 | `state.py` | all scene properties; span props have live-update callbacks |
-| `ui.py` | N-panel, collapsible sections |
+| `ui.py` | N-panel: persistent session/patch block + icon tabs (`state.ui_tab`) |
+
+`patchprep` and `sidematch` are **leaves**: neither imports `operators`, which
+is what keeps `overlay` able to read side references directly instead of
+through a late import. Anything needing a session or a preview object stays in
+`operators`.
 
 Generator order matters: specialised ones (Wedge 2, Triangle 3, Quad 4) come
 before the N-Side fallback (5+). `generators/ring.py` is **not** in that list:
 a band is recognised by its patch having two boundary loops, not by a side
 count, so `_generate_for_face` reaches for `generators.RING` directly.
+`generators/ngon.py` is out of the list for a different reason: it's a *mode*
+(`state.ngon_mode`, `N` during a session), not something a side count selects.
+
+Two boundary loops does **not** by itself mean Ring: see the band invariant.
 
 ## Hard-won invariants — don't regress these
 
+- **Nothing derived from a mesh is recomputed per hover.** Hovering a patch
+  re-prepares it, and preparing it used to re-walk every polygon, rebuild a
+  KD-tree over every vertex and rebuild the directed-half-edge table — on every
+  mouse move. On a 16k-triangle part that is ~85 ms a frame, i.e. a ceiling of
+  about 11 fps from patch preparation alone; cached it is ~0.5 ms.
+  `patch_data.analyse` is the single entry point and returns everything one
+  parse produces (patches, boundary loops, polygon→face-id map, weld map,
+  directed owners, vertex positions) as one consistent `MeshPatches`.
+  Invalidation is by **content**, not by event: `mesh_fingerprint` CRCs the
+  vertex coordinates via `foreach_get` plus the element counts, which is one C
+  loop and orders of magnitude cheaper than what it guards, and which cannot go
+  stale the way a "someone changed the mesh" hook can. `mesh_build`'s
+  committed-boundary map and `cad_display` use the same fingerprint.
+  **The cached tables are shared and must be treated as read-only** —
+  `generators.base.resolve_side_points` copies every point it takes out of
+  `positions`, because a generator may hand its input straight through into a
+  preview mesh (`resample_polyline_by_arclength` returns the very objects it was
+  given when the count already matches).
 - **Welding across patches.** Only *corner* vertices are exact source-mesh
   vertices, so they're welded by identity (`retop_source_vid` attribute).
   Interior boundary points are span-dependent resamples: they're welded only
@@ -101,6 +153,83 @@ count, so `_generate_for_face` reaches for `generators.RING` directly.
   misread degrades to a duplicate, never to a hole in a neighbour. One pass per
   result mesh, marked by `retop_patch_adoption`. Removal for a re-edit uses a
   looser rule (face centre only) since it's visible and reversible.
+- **Corners come from two tests that miss opposite things.** The angle test
+  (`detect_corners`) is geometric and swallows anything gentle: a 30° chamfer
+  reads as a smooth stretch, lands mid-side, and every generator paves across
+  it. The topological test (`detect_topological_corners`) fires where the
+  *neighbouring* face id changes — a real B-rep vertex, at any angle — but a
+  face whose whole boundary runs against one single neighbour has no junction
+  at all, however square it looks. `resolve_corners` is the arbiter.
+  **The switch is per mode** (`corner_method_spans`, default `ANGLE`;
+  `corner_method_ngon`, default `BOTH`) and that split is not cosmetic: a
+  grid's *side count chooses the generator*, so the extra corners topology
+  finds turn a bevel — whose long side borders face after face — from a Quad
+  into an N-Side, i.e. from a clean grid into a midpoint fan. An n-gon only
+  follows its boundary, so extra corners cost it nothing and are the one thing
+  that keeps a shallow chamfer. `TOPOLOGY` falls back to the angle test when a
+  boundary yields no junction — a patch with no corners is one single side,
+  which every span generator would then read as unusable.
+  **`boundary_neighbours` is per loop and parallel to `boundary_loops`**, so
+  anything reordering the loops (`sort_loops_outer_first`) must carry the
+  neighbours with them or a hole's neighbours get handed to the outer boundary.
+- **Too many corners is reduced only where the ranking shows a cliff.**
+  `sides.dominant_corners` runs on five or more candidates, sorts them by how
+  much the boundary bends, and cuts where consecutive scores fall off by
+  `CORNER_CLIFF`. A *ratio*, never an absolute angle, because that is the only
+  thing separating the two cases that both produce "more than four sides": a
+  real hexagon bends the same at every corner and has no cliff anywhere, while
+  a curve the angle test sampled into corners sits far below the real ones and
+  the drop is unmistakable. Four is tried first so a quad wins any tie, and
+  cutting all the way to a *triangle* takes a much clearer cliff
+  (`CORNER_CLIFF_TO_TRIANGLE`) — a rectangle with one chamfered corner is three
+  90s and two 45s, and a plain 2:1 rule called it a triangle.
+  **Topological corners are exempt** and take no part in the ranking. A
+  junction is a fact the mesh states outright; a gentle chamfer's junction
+  bends barely at all, so ranking it would drop the very thing the topology
+  test exists to catch (`tests/test_corners.py` pins that).
+  What *cannot* be decided is a boundary where every vertex bends the same and
+  every one is flagged — a coarsely tessellated circle and a real octagon are
+  the same polyline. `sides.corners_are_uniform` only **reports** it, into
+  `state.corner_warning`, and the panel says to raise the threshold. Guessing
+  would round a real octagon off half the time.
+- **One corner is worse than none.** `resolve_corners` used to hand back a
+  single corner as-is: `split_into_sides` then returns one side, no generator
+  accepts one, and the face is silently unpickable with no message anywhere.
+  `sides.complete_corners` tops it up to four, *anchored on the real corner* so
+  the one feature the face has lands on a side boundary rather than mid-side.
+  `tests/test_corner_ranking.py` pins it on a cardioid cusp.
+- **Synthesised corners are for single-loop patches only.** A **ring** never
+  goes through `find_generator` — it is chosen by having two loops — so a
+  cornerless rim gives it no trouble, and inventing four corners on each of its
+  two loops actively breaks it: `ring.ring_from_sides` allocates points *per
+  side*, so two loops whose invented corners don't face each other get their
+  points paired across a shear instead of straight across the band. That is
+  what a chamfer running round a circle showed. Hence
+  `resolve_corners(allow_synthesis=...)`, passed `num_loops == 1` by
+  `_prepare_patch`; `tests/test_ring_chamfer.py` pins it.
+- **A boundary with no corner still has a shape, and it is asked first.**
+  Neither corner test finds anything on a single closed curve, and without
+  `sides.synthesise_corners` such a face has *one* side, `find_generator` has
+  nothing that accepts one (Wedge 2, Triangle 3, Quad 4, N-Side 5+),
+  `_generate_for_face` returns None, and the face reads as "not selectable"
+  with no message anywhere.
+  But four corners spread by arc length is only right for a *circle*. A long
+  strip that curves back on itself — a rounded slot, a bore wall, a ribbon
+  round a feature — has its perimeter dominated by its two long sides, so the
+  quarter points land in the middle of them: the "quad" fed to the Coons patch
+  is half a long side plus half an end, and it comes out as a fan.
+  `shape_corners` reads the boundary instead. Turn measured **over a window**
+  (`SHAPE_WINDOW`, a share of the perimeter) rather than at a vertex, because a
+  tessellated rounded end is dozens of individually insignificant turns and one
+  real feature. Peaks must be *local maxima* at that scale — without it the
+  tangency where a straight side meets a cap gets picked, half as sharp as the
+  cap but well above the flat run — and separated by `SHAPE_SEPARATION`.
+  However many it finds is what decides the generator: two ends make a Wedge (a
+  grid running along the strip), three a Triangle, four a Quad. A boundary
+  whose turn is uniform (`SHAPE_CONTRAST`) has no shape at all — a circle — and
+  only that falls back to four by arc length, spread by *length* rather than
+  index because a tessellated circle is not sampled uniformly.
+  `tests/test_strip.py` pins the stadium, the circle and the rounded rectangle.
 - **A patch can have more than one boundary loop, and their order is random.**
   `compute_boundary_loops` walks a *set* of half-edges, so "loop 0" of a face
   with a hole is as likely to be the hole as the face. Anything reducing a
@@ -108,6 +237,19 @@ count, so `_generate_for_face` reaches for `generators.RING` directly.
   extent first). Two loops = a band, filled by the Ring generator; more than
   two = only the outer loop is used, and `state.num_loops` makes the panel say
   so rather than silently paving over the holes.
+- **Two boundary loops is not the same thing as a band.** The Ring generator
+  gives both loops the same point count, because every quad it makes runs
+  straight from one to the other. On a washer, a tube wall or a fillet round a
+  boss that is right. On a 200x100 plate with a 5mm hole it is a disaster:
+  either the hole gets a hundred points or the outline gets twelve, and every
+  quad is stretched the width of the plate. `ring.is_band` separates them on
+  how *even* the gap between the loops is (`BAND_GAP_SPREAD`, sampled around
+  the outer loop) and how far apart the two perimeters are
+  (`BAND_PERIMETER_RATIO`) — both deliberately generous, since calling a band a
+  plate costs more than the reverse. A non-band that is flat is filled as an
+  n-gon instead (`generate_holed`, which is what pressing N would give it
+  anyway) and `state.generator_note` says why. A committed patch is never
+  rerouted: it comes back as whatever it was built as. `tests/test_band.py`.
 - **The two loops of a ring must resample to the same point count.** Both go
   through `ring.around_count`, which floors the "around" span at each loop's
   side count (a side can't get zero segments). The commit path re-derives the
@@ -136,18 +278,115 @@ count, so `_generate_for_face` reaches for `generators.RING` directly.
 - **Never unregister an operator class from inside its own `execute()`** —
   that crashes Blender natively. `RETOP_OT_reload_addon` defers the real work
   to a `bpy.app.timers` callback.
-- **Raycasting must skip the addon's own preview/result meshes**, or the hover
-  flickers (ray hits the preview → "no patch" → preview deleted → rebuilt).
-  It must also skip viewport-hidden objects (Local View `/`).
+- **The reload must never hand-list submodules.** Reloading a package re-runs
+  its imports, but those resolve straight out of `sys.modules`, so a module
+  missing from `_perform_reload` keeps running its *old* code next to modules
+  that are new. The crash then lands somewhere unrelated — a reloaded caller
+  hitting an `AttributeError` for a function the stale module doesn't have yet
+  (that's how `generators/ngon.py` broke commit after being added to a
+  hand-written list). Submodules are collected from `sys.modules` under the
+  package name; `tests/test_reload.py` asserts nothing is missed. The version
+  string can't catch this: `version.py` reloads fine either way.
+- **Local View ('/') is overridden.** `RETOP_OT_local_view` is bound to
+  `SLASH`/`NUMPAD_SLASH` in the addon keyconfig; it delegates the toggle to
+  `view3d.localview` and then calls `mesh_build.sync_local_view`, which pulls
+  the preview and each isolated source's `<Source>_Retop` into every viewport
+  that is in local view. The binding is unconditional (a keymap can't follow a
+  scene property); `local_view_include_retop` off makes `sync_local_view` a
+  no-op, so '/' behaves exactly like stock Blender. `local_view_set` only
+  flips a per-viewport flag — no ID is created, so it is safe outside an undo
+  step and can be called from `enter_session_object` (a session started while
+  already isolated would otherwise build its preview invisibly).
+- **Creases are patch borders, never a plain angle threshold.**
+  `mesh_build.apply_result_shading` shades every face smooth and marks an edge
+  sharp only when its two faces carry *different* `PATCH_ID_ATTR` values and
+  their normals differ by more than `sharp_edge_angle`. One patch is one CAD
+  surface, so an angle-based auto-sharpen would crease a curved patch's own
+  low-span interior instead. It's re-run after **every** commit, not just the
+  first: sharpness is a property of the border *between* patches, so a new
+  neighbour changes the shading of an edge that already existed. It only writes
+  mesh attributes, so it's safe from a property callback.
+- **There is no per-object wireframe opacity in Blender.** `show_wire` is drawn
+  by the viewport overlay and its strength is that overlay's
+  `wireframe_opacity`, so `result_wire_opacity` writes to every 3D viewport
+  (`apply_wireframe_opacity`) and the panel says outright that it affects all
+  wireframes there. `result_show_wire` is scoped to *emphasized* (in-session)
+  result meshes: a resting one has never shown a wireframe and still doesn't.
+- **Result meshes are filed under a mirror of the Inbox hierarchy.**
+  `source_collection_path` walks up from the source object's collection and
+  returns the path *below* the deepest collection named `Inbox` (what the
+  bridge builds above it is its own scaffolding). `place_result_object`
+  rebuilds that path under `Retop`. Two consequences: `iter_result_objects`
+  must use `all_objects`, not `objects`, or it finds nothing; and collections
+  are IDs, so this runs only from `ensure_result_object` — never a callback.
+  Mirror levels usually come out as `Name.001` because the source collection
+  already owns the name; `_child_collection` matches by base name so a session
+  doesn't create a new level every time. An existing result mesh is re-homed
+  only if it still sits at the top of `Retop`, so a manual filing is never
+  stomped.
+- **Raycasting looks *through* every obstacle, it never gives up at one.** The
+  addon's own preview/result meshes (or the hover flickers: ray hits the
+  preview → "no patch" → preview deleted → rebuilt), viewport-hidden objects
+  (Local View `/`), and non-Plasticity meshes — a stand-in or a block-out in
+  front used to abort the cast and make everything behind it unpickable. The
+  step past a hit scales with the distance travelled: a fixed epsilon is either
+  too small to clear the surface at range (the same hit repeats until the
+  attempt cap) or large enough to skip past a thin recess floor on a small
+  part.
 - **Hover hysteresis** keeps the current patch unless a new one is clearly in
   front; coincident CAD surfaces otherwise flip-flop every mouse move.
 - **`context.region` / `region_data` are unreliable inside a modal** (may be
   the N-panel's region). Use `operators.viewport_region()` and window-absolute
-  mouse coords, and pass clicks/scrolls through when the cursor isn't over the
-  3D view — otherwise the panel's own buttons get swallowed.
+  mouse coords.
+- **The modal swallows nothing outside the 3D view's WINDOW region.** One
+  check, `point_in_region`, at the top of `_modal`, passing *every* event
+  through — not a list of them. Piecemeal per-handler checks kept leaking: the
+  clicks were guarded but MOUSEMOVE was not (Blender highlights buttons from
+  mouse moves, so the panel went dead while the clicks were being let through),
+  and the keys were not either (a digit typed into a panel field went to
+  span entry, Enter committed the patch instead of confirming the field).
+  `PANEL_EVENTS` records the rule so `tests/test_raycast.py` can assert it.
+  `_in_viewport` does not cover the panel — it is a *region* inside the same
+  VIEW_3D area. **And the WINDOW region alone does not either**: with Region
+  Overlap (Blender's default) the WINDOW region spans the whole area and the
+  N-panel, toolbar and headers float *on top* of it, so a point under the panel
+  is genuinely inside WINDOW. `point_in_viewport` subtracts every region in
+  `OVERLAY_REGION_TYPES`; testing WINDOW on its own is what kept the panel dead
+  through three separate attempts at this bug. The cost, accepted: session
+  keybinds need the pointer over the viewport, like Blender's own region
+  keymaps.
+- **A modal cursor is set on the whole window**, so it has to be dropped the
+  moment the pointer leaves the 3D view (`_update_cursor`, called before the
+  area check so it also fires when the pointer moves to another editor).
+  Leaving the eyedropper over the N-panel reads as "the UI is not for you".
+  `_apply_phase_ui` therefore only sets the cursor when the pointer isn't known
+  to be outside.
+- **`gpu.state.point_size_set` cannot be trusted.** The backend ignores it
+  whenever program point size is enabled — the shader has to write
+  `gl_PointSize` then, and the builtin `UNIFORM_COLOR` one does not — which
+  came out as 1px dots that ignored their size setting entirely. The N-gon
+  vertex dots are screen-space quads (`_quads_around`, two triangles each),
+  drawn from the POST_PIXEL handler where the region and `region_data` are at
+  hand to project with. `tests/test_overlay.py` asserts the geometry is the
+  size asked for, and that nothing calls `point_size_set(` again.
+- **The draw handlers are the one code Blender alone invokes**, so nothing
+  else notices when they break. `overlay.enable()` once shipped raising
+  `NameError` on a function an over-eager edit had deleted, with the whole
+  suite green: no test installed the handlers or called a callback.
+  `tests/test_overlay.py` now does both, across every phase and mode
+  combination — a draw callback that references a name that isn't there fails
+  at the call, whatever the early exits do afterwards.
 - **Session state lives in the scene but the modal doesn't.** A reload or a
   crashed modal leaves `session_active` set with nothing listening;
   `operators.session_is_running()` detects it and the panel offers a reset.
+- **`show_in_front` is a setting, not a consequence of the session.**
+  `result_see_through` (Alt+X, `RETOP_OT_toggle_see_through`) decides whether
+  the retopology draws over the rest of the scene or is occluded like any other
+  object — and turning it *off* is the only way to check the result sits on the
+  surface rather than floating off it, which is something you want mid-session.
+  An earlier version drove this from the viewport's own X-ray on Alt+Z; taking
+  over Blender's binding cost more than it gave, and the viewport's X-ray is a
+  different question anyway.
 - **Cosmetic offsets are Displace modifiers, never baked.** Commit reads the
   preview's *base* mesh; the result offset sets `show_render = False`.
 - **Order matters in `end_session` / `exit_session_object`:** clear the state
@@ -156,6 +395,20 @@ count, so `_generate_for_face` reaches for `generators.RING` directly.
 
 ## Session model (`RETOP_OT_session`)
 
+**Context follows what the user is doing.** `resolve_session_object` maps a
+`<Something>_Retop` object to `Something`, so selecting the retopology and
+starting a session carries on with the source rather than failing on a mesh
+that has no patch data and never will; `enter_session_object` and the operator's
+`invoke` both go through it, and the panel offers it as a button instead of the
+useless "no Plasticity face data" warning. And **Blender leaving Object Mode
+hands the viewport back**: the modal passes everything through and
+`_leave_for_other_mode` drops to the `OBJECT` phase, because entering Edit Mode
+on the retopology is the normal way to hand-tweak it. One exception, and it is
+not optional: if the mesh being edited *is* the result mesh a re-edit took
+faces from, the session stays put — `restore_reedit_removal` writes to that
+mesh, and anything written while Blender owns it in edit mode is discarded on
+exit, so the patch would be gone for good.
+
 `OBJECT` → click a Plasticity object → `PATCH` → click a surface → `ADJUST`
 → commit → back to `PATCH`. Esc: `ADJUST`→`PATCH`, `PATCH`→`OBJECT`,
 `OBJECT`→ end. Commit clearing `active_face_id` is the signal the modal
@@ -163,21 +416,313 @@ watches to return to picking. Clicking a patch that's already committed enters
 `ADJUST` in re-edit mode (`state.editing_committed`): same keybinds, but commit
 replaces the existing patch.
 
-Keybinds in `ADJUST`: Ctrl+wheel = span, `0-9`/Backspace = type a span,
-Tab = U/V (quad/wedge), right-click or Enter = commit, Esc = clear typing then
-discard. Plain wheel stays zoom.
+**Starting resolution.** `state.resolution` (Very Low … Extreme, powers of two)
+scales what `generator.default_spans` computed, via
+`state.scale_default_spans`. Every factor carries a `RESOLUTION_TRIM` of 0.75
+on top of its power of two: what the generators compute from edge lengths reads
+about a quarter too dense in practice, and each preset was inheriting that.
+The ratios between presets are unchanged — High is still exactly twice Mid. Order matters and is asserted: the preset is
+applied **first**, then propagation from a committed neighbour, then the spans
+a patch was committed with — scaling either of those would break the welds they
+exist to make, and would re-shape finished work on re-edit. Never below 1 span.
+The n-gon has no span to scale; its resolution is `ngon_angle`, which Ctrl+wheel
+drives directly (inverted, and multiplicatively — a 2° step is nothing at 90°
+and everything at 4°).
+
+Keybinds in `ADJUST`: Ctrl+wheel = span (or N-gon detail), `0-9`/Backspace = type a span,
+Tab = U/V (quad/wedge), `N` = n-gon mode, `M` = match a neighbour,
+`X` = delete the patch (re-edit only), right-click or Enter = commit,
+Esc = clear typing then discard. Plain wheel stays zoom.
+
+**Deleting a patch** (`X`, `RETOP_OT_delete_patch`) falls straight out of the
+re-edit model: picking a committed patch already took its faces out and
+snapshotted the result mesh, so deleting is `keep_reedit_removal` — dropping
+that snapshot instead of restoring it — with nothing committed in its place.
+Hence the poll on `editing_committed`: there is nothing to delete on a patch
+that was never committed. The removal used `context='FACES'`, so the shared
+boundary vertices a neighbour still uses survive and its welds hold.
+`forget_patch_settings` clears the patch's own entry, but the **span registry
+is deliberately left alone** — its entries are keyed by corner pair, i.e. they
+describe a shared boundary whose other side is still committed, and dropping
+them would break that neighbour's propagation to describe a patch that no
+longer exists. Shading is re-applied because a crease belongs to the border
+*between* patches, so losing one changes the edges of the ones around it.
+
+**Matching a neighbour.** The patch's sides are drawn in the viewport
+throughout `ADJUST` — green where a committed neighbour can be matched, grey
+where there is nothing to match, orange under the cursor. `match_mode` is on by
+default and `M` toggles the highlight; it is a *preference*, so it survives
+between patches and sessions (`_clear_match_state` resets the pins and the
+hover, never the mode). A left click has no other job while adjusting a patch,
+so it takes the side under the cursor, and **commits when it is pointing at
+none** — same as right-click and Enter. The picker deliberately does not take
+`Esc`: it is always on, and swallowing `Esc` would leave no way to discard.
+
+Hit-testing is in *screen* space (`nearest_side_to_cursor`): the sides are
+polylines lying exactly on the surface, so a raycast hits the surface beside
+them as often as the line.
+
+**A match copies vertices, not a count.** Copying the neighbour's segment count
+is not enough to weld to it and the difference is invisible until you look at
+the vertices: the two patches only coincide if they also divide the *same*
+polyline the same way, and they often don't — a neighbour committed as an n-gon
+put its points where the boundary curves, not at even spacing, so a grid
+resampling evenly to the same count lands between them every time.
+`mesh_build.committed_boundary_points` therefore gathers the neighbours' own
+committed vertices — once per patch, not once per side, since it walks the
+whole result mesh and a patch with eight sides was walking it eight times per
+hover — and `match_side_to_points` picks out the ones lying along a side. It
+returns `None` unless they cover both endpoints of the side (a neighbour
+touching half of it has nothing to align the rest against — matching a count
+there *is* the half-cell offset).
+
+**How far it reaches is two answers, not one.** `side_match_tolerance` is float
+slack by default: both patches usually resample the same polyline, so the real
+distance is ~0, and that strict answer is what the *automatic* matching uses —
+it fires without being asked, so it must never reach for something that merely
+happens to be nearby. `margin=True` widens it by `match_margin`, and that
+is the picker's answer: pointing at a side says which neighbour you mean, so it
+can reach one that has drifted — a coarse neighbour whose chords sag off a
+curved boundary, two CAD edges tessellated slightly differently.
+`SideReference` carries both, and `apply_side_matches` takes the strict one for
+automatic matching and the generous one only for sides you pinned.
+
+Both are a share of `reference_length`, which `build_side_references` sets to
+the **patch's longest side**, not the side being matched. A neighbour's drift
+is an absolute distance; scaling by the side made a short side's reach vanish,
+so a stub between two retopped faces refused while the long side beside it
+matched without trouble. And "found one point" is reported as its own reason
+rather than "no neighbour": a side shorter than the neighbour's vertex spacing
+genuinely has nothing to follow, and saying which of the two it is matters.
+
+**A closed side has one endpoint, not two.** A cornerless loop — a ring's rims,
+a disc's boundary — comes back from `resolve_side_points` as `loop + [loop[0]]`,
+so requiring a committed vertex "at both ends" asks for two in the same place
+and always refuses: a bore's rim read as unmatchable while visibly bordering
+finished retopology. `_close_matched_ring` handles that case instead.
+
+Coverage becomes the largest *gap* between consecutive matched points, and it
+has to be both a large share of the loop **and** far bigger than the others
+(`CLOSED_SIDE_GAP_RATIO`): a merely coarse neighbour has every gap the same
+size — a square inscribed in a circle already leaves 22% between points — while
+one covering half the rim leaves one huge gap among small ones. Testing the
+share alone refused coarse but perfectly matchable neighbours.
+
+A neighbour vertex on the side's *start* is deliberately not required. That
+start is arbitrary — a cornerless loop begins wherever the half-edge walk
+happened to — so it is not a B-rep vertex and nothing else in the model agrees
+on it; a disc committed as a Quad puts its points at arc-length resamples from
+its own synthesised corners, which land nowhere near. The match is rotated to
+lead with whichever point is nearest, and `apply_side_matches` then **drops
+that side's corner id**: a corner welds by *identity*, so leaving the name on a
+point that has moved would make a later patch reuse a vertex somewhere else, or
+drag this one onto it. It welds by proximity instead, like every other boundary
+point.
+
+**A side may only match the faces it actually borders.** This used to be pure
+proximity — one pool of every committed vertex in the result mesh, keep
+whatever falls within the tolerance — and proximity cannot tell "the patch
+across this edge" from "a patch that happens to run close by". A face stacked a
+fraction above another, a thin wall, two sheets meeting at a shallow angle: all
+of them put committed vertices well inside a side's reach without touching it,
+and the side came back with a run of vertices tracing a loop through its
+neighbourhood instead of the edge it shares. The mesh already says which face
+is across each boundary segment, so `patchprep.side_neighbours` returns the
+whole list per side (`[0]` is the majority, which is only what the picker
+*names*), `mesh_build.committed_boundary_map` groups the result mesh by owning
+patch, and `sidematch._match_pool` intersects the two.
+
+A side is still matched against **every** face it borders, not just the
+majority one: a side runs against two committed patches whenever the boundary
+between them falls mid-side, which is the normal case when the angle test
+didn't put a corner there. Untracked retopology (`NO_PATCH`, predating patch
+ids) belongs to no named face and so stays in every pool. When a side's
+neighbours are named but none is committed, the pool is **empty** rather than
+falling back to the rest of the mesh, and the reason names the patch it is
+waiting for. `tests/test_match_specificity.py` builds the stacked-sheet case
+and asserts both that it is refused and that plain proximity would have taken
+it — otherwise the test proves nothing.
+
+**Exclude the patch being generated, not the "active" one.** Picking a
+committed patch generates it *before* recording it as active, so reading
+`state.active_face_id` in `build_side_references` left the patch's own
+committed geometry in its own pool and it matched itself: a re-edit came back
+with whatever spans reproduced what was already there instead of the ones it
+was committed with. `build_side_references` takes the face id explicitly.
+
+**A grid cannot honour two counts in one direction.** Two sides driving the
+same span used to both get substituted, with the second silently winning the
+count — leaving the loser's points resampled to a number that was not theirs,
+i.e. the exact crack matching exists to close. `sidematch.span_key_for` names
+the span a side drives (an n-gon gets a key per side, so nothing collides),
+`_winning_matches` keeps one per key — a pin beats an automatic match, then the
+denser one wins — and only the winner is substituted. The rest keep the
+boundary the CAD drew, and `state.match_conflicts` tells the panel how many
+were outvoted.
+
+**An automatic match seeds a span; a pin decides it.** Spans are resolved
+*before* any side is rewritten, and `sidematch._honours` then drops any match
+the resolved span can no longer reproduce. Without that split, scrolling the
+span on a side bordering a committed neighbour did nothing at all — the match
+put its own count straight back every regeneration and the control looked
+broken. Changing the count away from the neighbour's is how you say "don't weld
+here"; a pin is immune, because it was asked for.
+
+**Two kinds of pin.** `PIN_NEIGHBOUR` follows the committed patch across the
+side. `PIN_SOURCE` (Ctrl+click) follows the side's **own CAD tessellation**,
+thinned by curvature with the same rule n-gon mode uses — no neighbour needed,
+so it works on the first patch of a model and on any side facing nothing yet.
+`state.side_overrides` stores the *kind*, not the count: the count is recomputed
+from live geometry every regeneration, so a stored copy could only disagree.
+Clicking a side that already carries that pin releases it.
+
+Every refusal carries a `reason`, surfaced in the click warning and the panel,
+and the viewport **brightens a side's own colour on hover** rather than
+replacing it — a single hover colour hid the one thing worth knowing before
+clicking, which is whether the side can be matched at all.
+
+What makes those points cheap to use is `resample_polyline_by_arclength`:
+asked for exactly as many points as it was given, it returns them untouched. So
+`apply_side_matches` substitutes them for the side's polyline in `prepared`,
+and every generator — Quad, Triangle, Wedge, N-Side, Ring, N-gon, **none of
+them modified** — reproduces them exactly, as long as it puts `len - 1`
+segments along that side. That count is what the pin stores
+(`state.side_overrides`, JSON, cleared by `set_active_patch` because a pin
+names a side *by index* on the patch it was picked on).
+
+`auto_match_neighbours` (default on) applies the same substitution
+automatically to **every** generator, not just n-gons: a grid that copies only
+the segment count still lands between the neighbour's vertices whenever the
+neighbour didn't space them evenly. Automatic matching takes only the strict
+answer; the margin is for sides you pointed at. The commit re-runs the
+substitution before registering, or the registry would advertise a curvature
+count on a side that was actually matched.
+
+The overlay draws **which vertices a match would take** — dots on the hovered
+side's candidates and on every pinned side's, green from a neighbour and amber
+from the CAD edge. Knowing a side *can* be matched is only half of it; a match
+going to the wrong neighbour or stopping short is invisible from a coloured
+line lying on the boundary. `SideReference` carries world-space copies for
+exactly that, computed at generation time — a draw handler has no business
+transforming points on every redraw.
+
+`sidematch._active_sides` is a module global holding Vectors describing a
+preview: rebuilt on every generation, dropped on every session exit, and empty
+after a reload — the overlay must cope with that.
+
+**N-gon mode** replaces the span grid with one face following the boundary,
+for flat faces where a grid is only wasted geometry. A patch committed as an
+n-gon reopens as one whatever the current mode — same rule as its spans.
+Toggling the mode goes through the property's update callback, and
+`regenerate_active_preview` writes `generator_name`/`num_sides`/`num_loops`
+back so the panel and overlay follow.
+
+`operators.ngon_blocker` decides whether a patch may take one at all, and
+writes `ngon_available`/`ngon_unavailable_reason` for the panel and the `N`
+key to explain themselves instead of doing nothing. Two blockers:
+
+- **Not flat.** `patch_is_planar` compares every polygon of the patch against
+  their average normal (`ngon_planar_tolerance`, 5° default). One face across
+  a bevel or a fillet is a flat lid over it — the shape is simply gone. This
+  runs on every hover, so it uses polygon normals only: no boundary walk, no
+  KD-tree.
+- **More than one hole.** One hole is fine: `generate_holed` bridges it to the
+  outer boundary with two edges and emits **two** n-gons. That is forced —
+  a Blender n-gon carries a single loop, and the one-face "keyhole" alternative
+  needs the bridge vertices duplicated, which the boundary weld then merges
+  back and destroys the face. Two faces need no duplicates and stay manifold.
+  The hole loop is wound opposite to the outer one (both are half-edges of the
+  same patch), which is why both arcs are walked *forward*. Corner indices are
+  emitted outer-loop-first to match `PreparedPatch.corner_source_ids`, and the
+  commit registers spans per loop like a ring does.
+
+The mode gate and the corner method interact: the method depends on which
+generator will run, so `_generate_for_face` decides the mode *first* and
+re-prepares the patch if a blocker only shows up once the loop count is known.
+
+**Its boundary is *selected*, never resampled** (`ngon.side_points`): it walks
+the source boundary accumulating turn and keeps a vertex every `ngon_angle`
+degrees. This is not a cosmetic choice. `sides.py` only calls a vertex a corner
+past `corner_angle_threshold` (45° of deviation), so a chamfer — typically
+20-40° — is *not* a corner and sits in the middle of a side; arc-length
+resampling, which is what this did first, put points wherever the even spacing
+fell and cut a straight chord across it. Accumulating turn keeps the chamfer's
+own vertex, and every kept point is a genuine CAD boundary vertex.
+
+The cost: a curvature-selected n-gon side does not line up point-for-point with
+a *grid* neighbour along a shared edge, so only their shared corners weld. Side
+matching buys that back exactly — a matched side is handed the neighbour's own
+vertices — and `ngon_match_neighbours` does it without being asked.
+
+## Seeing the CAD structure (`cad_display.py`)
+
+The bridge sends a triangle soup, so a Plasticity import reads as one
+undifferentiated field of triangles even though the mesh records which triangle
+belongs to which CAD face. Two overlays put that structure back; they make very
+different kinds of claim and the distinction matters.
+
+**Plasticity edges are exact.** A boundary half-edge `(a, b)` of one patch is
+matched by `(b, a)` of the patch across it, so a B-rep edge is the maximal run
+of boundary segments whose neighbouring face id does not change, and a B-rep
+vertex is where it does — the same signal the topological corner test runs on.
+`_edge_runs` splits a loop at those junctions. Each shared edge is walked by
+*both* its faces, and the lower face id emits it: settled by comparison rather
+than by remembering what has been seen, since a set of welded vertex indices is
+a much larger thing to carry around than one `<`. An outer boundary (no face
+across it) always emits. On an **open sheet** a whole free boundary is one run,
+because nothing distinguishes its segments — that is a real limitation, and it
+costs nothing visually since everything is drawn as segments anyway.
+
+**Surface flow is derived, and the panel says so.** Plasticity's isoparametric
+curves come from each face's NURBS parameterisation and *none of it crosses the
+bridge* — the protocol carries no surface parameters at all. What is drawn
+instead is the grid each face would be retopologized into: the same corner
+split, the same generators, at a low span, reprojected through one shared BVH.
+On a fillet or a swept face that lands very close to the true isoparms, because
+both answer the same question about the same boundary. It is also the more
+useful of the two here, being the topology the retopology would actually get.
+A non-band annulus draws its outer loop only, for the same reason
+`_generate_for_face` refuses to ring it.
+
+Everything is cached on the same fingerprint as `patch_data.analyse`, per
+`(product, face id)`. A draw handler runs on every redraw and may not walk a
+mesh. Both displays are drawn with `depth_test_set('NONE')` — they lie *on* the
+surface, so testing them against it is a coin flip per pixel — and as **one
+LINES batch each**, since a CAD part has hundreds of edges and a draw call
+apiece is what turns an overlay into a stutter.
+
+`E` toggles the edges, `Ctrl+E` the flow, in every session phase: the structure
+is read while *choosing* a surface as much as while adjusting one.
 
 ## Status
 
 Implemented: Quad, Triangle, Wedge (2 sides), N-Side (5+, midpoint
 quadrangulation), Ring (two boundary loops: a face with a hole, or a tube-like
-face — this is the Cylinder case), span propagation, per-patch UVs, boundary
-welding, viewport session with overlay, re-selecting a committed patch to
-change its spans (replaces it in place).
+face — this is the Cylinder case), N-gon mode for flat faces, topological
+corner detection, span propagation,
+per-patch UVs, boundary welding, smooth shading with sharp patch borders,
+Inbox collection mirroring, viewport session with overlay, re-selecting a
+committed patch to change its spans (replaces it in place).
 
-Not implemented yet: **Ring with corner matching** (the two loops are paired by
+Also implemented: matching a committed neighbour along a shared side, by
+pointing at it (`M`) or automatically, for every generator and confined to the
+faces the side actually borders; pinning a side to its own CAD tessellation
+(`Ctrl`+click); corner ranking, which keeps a quad a quad when the angle test
+also flags a tessellated curve; the Plasticity edge / B-rep vertex / surface
+flow overlay (`E`, `Ctrl`+`E`); and a per-mesh cache under all of it, without
+which none of the above is affordable on every hover.
+
+Not implemented yet: **N-gon on a face with several holes** (the pipeline
+truncates past two loops, so only one bridge pair is ever possible),
+**Ring with corner matching** (the two loops are paired by
 arc length, so a hole shaped very differently from the outer boundary distorts
 the band, and spans don't propagate *into* a ring), faces with **more than one
 hole** (outer loop only, panel warns), **Quad Fill** with configurable loop
 cuts, **N-Side** with per-side spans and manual corner placement, quad-family
 (solving a chain of connected quads in one click).
+
+Known rough edge: matching one side of a **multi-side ring** sets the whole
+"around" count from that side alone, since `span_key_for` maps every side of a
+ring to `span_u`. Correct for the common case (a rim is one cornerless side),
+wrong when a ring's loop has several sides — it wants the allocation logic
+`ring.allocate_segments` already has, threaded back through the match.

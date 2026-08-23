@@ -1,5 +1,6 @@
 import mathutils
 
+from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
 
@@ -18,7 +19,7 @@ class NSideGenerator(Generator):
     reference tool's full N-Side mode adds, and is not implemented yet.
     """
 
-    name = "N-Side"
+    name = constants.NSIDE
 
     def matches(self, num_sides):
         return num_sides >= 5

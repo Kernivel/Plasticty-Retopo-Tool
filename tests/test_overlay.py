@@ -1,0 +1,215 @@
+"""Run inside Blender: blender --background --python tests/test_overlay.py
+
+The viewport overlays: their draw handlers, and the keybind hints.
+
+This file exists because the suite once passed with `overlay.enable()` raising
+`NameError` on a function that had been deleted by an over-eager edit. Nothing
+called it -- the draw handlers are the one part of the addon that only Blender
+invokes, so unless a test does it too, a missing name gets found by the user.
+So: install the handlers, and call every callback.
+"""
+import os
+import sys
+import importlib
+
+_ADDON_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(_ADDON_DIR))
+
+import bpy
+
+pr = importlib.import_module(os.path.basename(_ADDON_DIR))
+
+FAILURES = []
+
+
+def check(name, cond, extra=""):
+    print(f"[{'PASS' if cond else 'FAIL'}] {name} {extra}")
+    if not cond:
+        FAILURES.append(name)
+
+
+try:
+    pr.unregister()
+except Exception:
+    pass
+pr.register()
+
+overlay = pr.overlay
+state = bpy.context.scene.plasticity_retop
+
+
+# ===========================================================================
+# Installing and removing the handlers
+# ===========================================================================
+def enable():
+    """Returns the exception instead of raising, so a missing name is reported
+    as a failed check rather than killing the run."""
+    try:
+        overlay.enable()
+        return None
+    except Exception as exc:  # noqa: BLE001 -- reporting it *is* the test
+        return exc
+
+
+error = enable()
+check("enable() installs the handlers without raising", error is None, error)
+check("both are installed",
+      overlay._handle is not None and overlay._points_handle is not None)
+
+error = enable()
+check("calling it twice is harmless", error is None, error)
+check("and does not stack a second pair",
+      overlay._handle is not None and overlay._points_handle is not None)
+
+overlay.disable()
+check("disable() removes both",
+      overlay._handle is None and overlay._points_handle is None)
+overlay.disable()
+check("and is safe twice", True)
+
+
+# ===========================================================================
+# The callbacks themselves
+#
+# Headless there is no region, so they take their early exits -- which is
+# exactly the path that was broken: a name that does not exist fails at import
+# of the *call*, before any of that matters.
+# ===========================================================================
+def call(callback, label):
+    try:
+        callback()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"    {label} raised: {exc!r}")
+        return False
+
+
+overlay.enable()
+for phase in ('OBJECT', 'PATCH', 'ADJUST'):
+    for session_active in (False, True):
+        state.session_active = session_active
+        state.session_phase = phase
+        check(f"_draw survives phase={phase} active={session_active}",
+              call(overlay._draw, "_draw"))
+        check(f"_draw_points survives phase={phase} active={session_active}",
+              call(overlay._draw_points, "_draw_points"))
+
+state.session_active = True
+state.session_phase = 'ADJUST'
+for ngon in (False, True):
+    for match in (False, True):
+        state.ngon_mode = ngon
+        state.match_mode = match
+        check(f"_draw_points survives ngon={ngon} match={match}",
+              call(overlay._draw_points, "_draw_points"))
+
+check("with no preview there are no vertex coords",
+      overlay._preview_vertex_coords() is None)
+check("and with no active patch, no side references to draw",
+      pr.sidematch.active_sides() == [])
+
+overlay.typed_span = "12"
+check("_draw survives a half-typed span", call(overlay._draw, "_draw"))
+overlay.typed_span = ""
+overlay.disable()
+
+
+# ===========================================================================
+# The hints themselves
+# ===========================================================================
+for phase in ('OBJECT', 'PATCH', 'ADJUST'):
+    state.session_phase = phase
+    binds = overlay.keybinds_for(state)
+    check(f"phase {phase} advertises some keys", len(binds) > 0, len(binds))
+    check(f"phase {phase} yields (key, action) pairs",
+          all(isinstance(k, str) and isinstance(a, str) and k and a
+              for k, a in binds), binds)
+
+state.session_phase = 'ADJUST'
+state.ngon_mode = True
+ngon_binds = dict(overlay.keybinds_for(state))
+check("N-gon mode offers Ctrl+Scroll for detail, not for a span it has not got",
+      ngon_binds.get("Ctrl+Scroll") == "Detail +/-", ngon_binds)
+state.ngon_mode = False
+grid_binds = dict(overlay.keybinds_for(state))
+check("a grid offers it for the span", "Span" in grid_binds.get("Ctrl+Scroll", ""),
+      grid_binds)
+
+state.editing_committed = True
+check("a re-edit advertises the delete",
+      "X" in dict(overlay.keybinds_for(state)))
+state.editing_committed = False
+check("and a fresh patch does not",
+      "X" not in dict(overlay.keybinds_for(state)))
+
+# The overlay scale reaches the draw path rather than being a dead property.
+state.overlay_scale = 2.0
+overlay.enable()
+check("_draw survives a scaled overlay", call(overlay._draw, "_draw"))
+state.overlay_scale = 0.5
+check("and a shrunk one", call(overlay._draw, "_draw"))
+state.overlay_scale = 1.0
+overlay.disable()
+
+
+# ===========================================================================
+# N-gon vertex dots
+#
+# They used to be GL points sized with `gpu.state.point_size_set`, which the
+# backend ignores whenever program point size is on -- the shader has to write
+# gl_PointSize then, and the builtin UNIFORM_COLOR one does not. The result was
+# 1px dots that ignored the size setting completely. They are screen-space
+# quads now, so the pixels asked for are the pixels drawn, and that is a pure
+# function this can check exactly.
+# ===========================================================================
+source = open(os.path.join(_ADDON_DIR, "overlay.py"), encoding="utf-8").read()
+# The *call*, not the word: the comment above the constants explains why it is
+# gone, and should keep saying so.
+check("nothing calls GL point size any more",
+      "point_size_set(" not in source)
+
+vertices, indices = overlay._quads_around([(100.0, 200.0)], 5.0)
+check("one dot is four vertices", len(vertices) == 4, len(vertices))
+check("and two triangles", len(indices) == 2, indices)
+check("indices stay inside the vertices they were built with",
+      all(0 <= i < len(vertices) for tri in indices for i in tri), indices)
+
+xs = [v[0] for v in vertices]
+ys = [v[1] for v in vertices]
+check("the quad is 2*half wide -- the size setting reaches the geometry",
+      abs((max(xs) - min(xs)) - 10.0) < 1e-6, max(xs) - min(xs))
+check("and 2*half tall", abs((max(ys) - min(ys)) - 10.0) < 1e-6, max(ys) - min(ys))
+check("centred on the point it marks",
+      abs((max(xs) + min(xs)) / 2 - 100.0) < 1e-6
+      and abs((max(ys) + min(ys)) / 2 - 200.0) < 1e-6, (xs, ys))
+
+wide, _ = overlay._quads_around([(0.0, 0.0)], 10.0)
+narrow, _ = overlay._quads_around([(0.0, 0.0)], 5.0)
+check("doubling the size doubles the square -- the bug was that it did not",
+      (max(v[0] for v in wide) - min(v[0] for v in wide))
+      == 2 * (max(v[0] for v in narrow) - min(v[0] for v in narrow)))
+
+many_v, many_i = overlay._quads_around([(0.0, 0.0), (50.0, 0.0), (0.0, 50.0)], 3.0)
+check("every dot gets its own quad", len(many_v) == 12 and len(many_i) == 6,
+      f"{len(many_v)} verts, {len(many_i)} tris")
+check("nothing at all is still nothing", overlay._quads_around([], 5.0) == ([], []))
+
+# And the draw path itself, in the states it is reached from.
+state.session_active = True
+state.session_phase = 'ADJUST'
+state.ngon_mode = True
+state.ngon_show_verts = True
+for size in (2.0, 11.0, 40.0):
+    state.ngon_vert_size = size
+    check(f"_draw survives a dot size of {size}", call(overlay._draw, "_draw"))
+state.ngon_vert_size = 11.0
+
+check("_draw_vertex_dots is safe with no region",
+      call(lambda: overlay._draw_vertex_dots(bpy.context, state, None),
+           "_draw_vertex_dots"))
+
+print()
+if FAILURES:
+    print(f"=== {len(FAILURES)} FAILURE(S): {FAILURES}")
+    sys.exit(1)
+print("=== ALL CHECKS PASSED")

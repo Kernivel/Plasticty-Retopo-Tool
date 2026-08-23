@@ -173,6 +173,92 @@ try:
 finally:
     pr.operators.ray_from_event = _real_ray_from_event
 
+
+# ===========================================================================
+# The N-panel shares the 3D view's area
+#
+# The modal only knows the panel is under the cursor by this region test, and a
+# regression here is not subtle: swallowing MOUSEMOVE over the panel leaves the
+# whole panel unclickable, because Blender highlights buttons from mouse moves
+# and never highlights the one the click then lands on. The click itself being
+# passed through is not enough.
+# ===========================================================================
+class FakeRegion:
+    def __init__(self, x, y, width, height):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+
+_region = FakeRegion(x=100, y=50, width=800, height=600)
+_in_region = pr.operators.point_in_region
+
+check("a point in the middle of the viewport is inside",
+      _in_region(_region, 500, 350))
+check("its bottom-left corner is inside", _in_region(_region, 100, 50))
+check("its top-right corner is inside", _in_region(_region, 900, 650))
+check("a point left of it -- a left-docked toolbar -- is outside",
+      not _in_region(_region, 99, 350))
+check("a point right of it -- where the N-panel sits -- is outside",
+      not _in_region(_region, 901, 350))
+check("below is outside", not _in_region(_region, 500, 49))
+check("above is outside", not _in_region(_region, 500, 651))
+check("no region at all is outside, not a crash", not _in_region(None, 500, 350))
+
+# --- Region Overlap: the N-panel floats *over* the WINDOW region ---
+#
+# Blender's default. The WINDOW region spans the whole area and the panels are
+# drawn on top of it, so a point under the N-panel really is inside the WINDOW
+# region -- testing that region alone reports "over the viewport" while the
+# pointer is over the panel, and the modal then eats the panel's events. This
+# is what made the panel dead during a session.
+class FakeArea:
+    def __init__(self, regions):
+        self.regions = regions
+
+
+_n_panel = FakeRegion(x=700, y=50, width=200, height=600)   # right edge, overlapping
+_n_panel.type = 'UI'
+_header = FakeRegion(x=100, y=624, width=800, height=26)
+_header.type = 'HEADER'
+_collapsed_toolbar = FakeRegion(x=100, y=50, width=1, height=600)
+_collapsed_toolbar.type = 'TOOLS'
+FakeRegion.type = 'WINDOW'
+_window = FakeRegion(x=100, y=50, width=800, height=600)
+_window.type = 'WINDOW'
+
+_area = FakeArea([_window, _n_panel, _header, _collapsed_toolbar])
+_in_viewport = pr.operators.point_in_viewport
+
+check("open viewport space is over the viewport",
+      _in_viewport(_area, _window, 400, 350))
+check("a point under the N-panel is NOT, even though the WINDOW region "
+      "extends beneath it",
+      not _in_viewport(_area, _window, 800, 350))
+check("nor is a point under the header",
+      not _in_viewport(_area, _window, 400, 630))
+check("a collapsed toolbar covers nothing and must not veto the viewport",
+      _in_viewport(_area, _window, 100, 350))
+check("outside the area entirely is still outside",
+      not _in_viewport(_area, _window, 50, 350))
+check("no area to inspect falls back to the region test",
+      _in_viewport(None, _window, 400, 350))
+check("the panel types that float over the view are all listed",
+      {'UI', 'TOOLS', 'HEADER', 'TOOL_HEADER'} <= pr.operators.OVERLAY_REGION_TYPES)
+
+check("mouse moves are in the set the modal must pass through",
+      'MOUSEMOVE' in pr.operators.PANEL_EVENTS)
+check("so are the clicks",
+      {'LEFTMOUSE', 'RIGHTMOUSE'} <= pr.operators.PANEL_EVENTS)
+check("and the wheel, which adjusts spans from the panel too",
+      {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'} <= pr.operators.PANEL_EVENTS)
+# Keys too: a digit typed into a panel field must reach the field, not the
+# span-entry handler, and Enter must confirm the field rather than commit.
+check("and every session keybind, so none of them steals from a panel field",
+      {'RET', 'ESC', 'TAB', 'BACK_SPACE', 'M', 'N', 'ZERO', 'NINE'}
+      <= pr.operators.PANEL_EVENTS)
+
 pr.unregister()
 
 print()

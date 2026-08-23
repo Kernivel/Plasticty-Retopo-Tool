@@ -31,7 +31,9 @@ import bpy
 import bmesh
 import mathutils
 import json
+import math
 
+from . import patch_data
 from . import state as state_mod
 
 PREVIEW_OBJ_NAME = "RetopPreview"
@@ -43,6 +45,11 @@ PREVIEW_MATERIAL_NAME = "RetopPreviewMaterial"
 RESULT_MATERIAL_NAME = "RetopResultMaterial"
 RESULT_DIM_MATERIAL_NAME = "RetopResultMaterialDim"
 COLLECTION_NAME = "Retop"
+# The Plasticity bridge drops everything it imports under a collection named
+# "Inbox"; whatever sits above it is the bridge's own scaffolding (the file /
+# connection name), so mirroring starts *below* Inbox.
+INBOX_COLLECTION_NAME = "Inbox"
+SHARP_EDGE_ATTR = "sharp_edge"
 SOURCE_VID_ATTR = "retop_source_vid"
 BOUNDARY_ATTR = "retop_is_boundary"
 # Plasticity face ids arrive from the bridge as int32 (client.py decodes them
@@ -172,6 +179,26 @@ def lookup_patch_settings(source_obj, face_id):
     return get_patch_settings_table(result_obj).get(str(face_id))
 
 
+def forget_patch_settings(source_obj, face_id):
+    """Drop the record of what a patch was committed with.
+
+    Called when its geometry is deleted for good. The *span registry* is
+    deliberately left alone: its entries are keyed by corner pair, i.e. they
+    describe a shared boundary, and the patch on the other side is still
+    committed along it -- dropping them would break its propagation to
+    describe a patch that no longer exists.
+    """
+    result_obj = bpy.data.objects.get(result_object_name_for(source_obj))
+    if result_obj is None:
+        return False
+    table = get_patch_settings_table(result_obj)
+    if str(face_id) not in table:
+        return False
+    del table[str(face_id)]
+    save_patch_settings_table(result_obj, table)
+    return True
+
+
 def _patch_ids_of_faces(mesh):
     attr = mesh.attributes.get(PATCH_ID_ATTR)
     if attr is None or len(mesh.polygons) == 0:
@@ -205,13 +232,12 @@ def _source_patch_lookup(source_obj, result_obj):
     source polygon to one of its points names the patch.
     """
     from . import geometry
-    from . import patch_data
 
     src_mesh = source_obj.data
     if len(src_mesh.polygons) == 0:
         return None
 
-    face_id_of_poly, _ = patch_data.polygon_face_ids(src_mesh)
+    face_id_of_poly = patch_data.analyse(src_mesh).face_id_of_poly
     bvh, tri_poly = geometry.build_bvh_with_polygon_map(src_mesh)
     # The BVH is in the source object's local space; result geometry is stored
     # in world space (i.e. under an identity object matrix, unless the user
@@ -413,6 +439,211 @@ def get_or_create_collection(context):
     return coll
 
 
+# --- mirroring the Plasticity collection hierarchy ---------------------
+#
+# The bridge recreates Plasticity groups as nested collections under an
+# "Inbox" collection. A flat Retop collection loses that structure exactly
+# when it matters most -- a model with dozens of parts -- so the result mesh
+# is placed under the same relative path, rebuilt beneath "Retop".
+#
+# Collections are IDs, so these run only from the session structural moments
+# (ensure_result_object), never from a property callback or a draw handler.
+
+
+def _collection_parents():
+    """child collection name -> parent collection. The scene master collection
+    is not in bpy.data.collections, so a collection linked straight into the
+    scene simply has no entry here and ends the walk.
+    """
+    parents = {}
+    for coll in bpy.data.collections:
+        for child in coll.children:
+            parents[child.name] = coll
+    return parents
+
+
+def source_collection_path(source_obj):
+    """The source object collection path *below* Inbox, outermost first.
+
+    Empty when the object is not under an Inbox collection at all -- it was
+    not imported by the bridge, or the hierarchy has been reorganised since,
+    and inventing a path out of unrelated collection names would be worse than
+    leaving the result at the top of Retop.
+    """
+    collections = [c for c in source_obj.users_collection
+                   if c.name != COLLECTION_NAME]
+    if not collections:
+        return []
+
+    parents = _collection_parents()
+    path = []
+    current = collections[0]
+    seen = set()
+    while current is not None and current.name not in seen:
+        seen.add(current.name)  # a corrupt cycle must not hang the session
+        path.append(current.name)
+        current = parents.get(current.name)
+    path.reverse()
+
+    # Deepest Inbox wins: nested imports can produce more than one, and the
+    # closest one to the object is what its path is relative to.
+    inbox_at = None
+    for i, name in enumerate(path):
+        if name.split(".")[0].lower() == INBOX_COLLECTION_NAME.lower():
+            inbox_at = i
+    if inbox_at is None:
+        return []
+    return path[inbox_at + 1:]
+
+
+def _child_collection(parent, name):
+    """A direct child of `parent` matching `name`, ignoring Blender .001
+    disambiguation suffixes -- otherwise a name already taken elsewhere in the
+    blend would make every session create yet another copy of the same level.
+    """
+    for child in parent.children:
+        if child.name == name or child.name.rsplit(".", 1)[0] == name:
+            return child
+    return None
+
+
+def ensure_collection_path(context, path):
+    """The collection at `path` under Retop, creating the levels it needs."""
+    coll = get_or_create_collection(context)
+    for name in path:
+        child = _child_collection(coll, name)
+        if child is None:
+            child = bpy.data.collections.new(name)
+            coll.children.link(child)
+        coll = child
+    return coll
+
+
+def place_result_object(context, result_obj, source_obj, only_if_unplaced=False):
+    """Link `result_obj` into the mirror of the source object Inbox path.
+
+    `only_if_unplaced` is for result meshes that already existed: they move
+    only if they still sit at the top of Retop, i.e. were never placed.
+    Anything the user has filed somewhere themselves stays put.
+    """
+    if not context.scene.plasticity_retop.mirror_source_collections:
+        return None
+
+    path = source_collection_path(source_obj)
+    if not path:
+        return None
+
+    root = get_or_create_collection(context)
+    if only_if_unplaced and result_obj.name not in root.objects:
+        return None
+
+    target = ensure_collection_path(context, path)
+    if result_obj.name in target.objects:
+        return target
+    for coll in list(result_obj.users_collection):
+        coll.objects.unlink(result_obj)
+    target.objects.link(result_obj)
+    return target
+
+
+# --- smooth shading with sharp edges -----------------------------------
+#
+# Plasticity models read as smooth surfaces meeting at hard creases, and a
+# retopology that reads as faceted is hard to judge against them. Every face
+# is shaded smooth; the creases come from marking edges sharp -- but *only*
+# edges between two different patches. One patch is one CAD surface, so its
+# interior is smooth by construction, and a plain angle-based auto-sharpen
+# would crease a curved patch own low-span interior edges instead.
+
+
+def _sharp_edge_flags(mesh, angle_threshold_deg):
+    """Which edges of the result mesh are creases: patch borders where the two
+    sides genuinely meet at an angle. A tangent border (a fillet running into
+    the face it blends) stays smooth, which is the whole point of using the
+    angle rather than "every patch border".
+    """
+    sharp = [False] * len(mesh.edges)
+    if not mesh.polygons:
+        return sharp
+
+    patch_ids = _patch_ids_of_faces(mesh)
+    edge_index = {tuple(sorted(edge.vertices)): edge.index for edge in mesh.edges}
+
+    edge_faces = {}
+    for poly in mesh.polygons:
+        for key in poly.edge_keys:
+            edge_faces.setdefault(key, []).append(poly.index)
+
+    threshold = math.radians(angle_threshold_deg)
+    for key, faces in edge_faces.items():
+        if len(faces) != 2:
+            continue  # open border or non-manifold: leave shading alone
+        first, second = faces
+        if patch_ids[first] == patch_ids[second]:
+            continue
+        normal_a = mesh.polygons[first].normal
+        normal_b = mesh.polygons[second].normal
+        if normal_a.length < 1e-9 or normal_b.length < 1e-9:
+            continue
+        if normal_a.angle(normal_b, 0.0) > threshold:
+            index = edge_index.get(key)
+            if index is not None:
+                sharp[index] = True
+    return sharp
+
+
+def apply_result_shading(context, result_obj):
+    """Shade the result mesh smooth and re-mark its creases.
+
+    Called after every commit and whenever the shading settings change. It
+    only writes mesh attributes -- no datablock is created -- so it is safe
+    from a property update callback.
+    """
+    state = context.scene.plasticity_retop
+    mesh = result_obj.data
+    if not mesh.polygons:
+        return
+
+    smooth = state.result_shade_smooth
+    mesh.polygons.foreach_set("use_smooth", [smooth] * len(mesh.polygons))
+
+    flags = (_sharp_edge_flags(mesh, state.sharp_edge_angle) if smooth
+             else [False] * len(mesh.edges))
+    attr = mesh.attributes.get(SHARP_EDGE_ATTR)
+    if attr is None:
+        attr = mesh.attributes.new(SHARP_EDGE_ATTR, 'BOOLEAN', 'EDGE')
+    attr.data.foreach_set("value", flags)
+    mesh.update()
+
+
+def refresh_result_shading(context):
+    """Re-shade every result mesh -- the shading settings are global."""
+    for result_obj in iter_result_objects(context):
+        apply_result_shading(context, result_obj)
+
+
+def apply_wireframe_opacity(context):
+    """Push the wireframe opacity setting into every 3D viewport.
+
+    Blender has no per-object wireframe opacity: `show_wire` is drawn by the
+    viewport overlay, and its strength is that overlay own
+    `wireframe_opacity`. Driving it is the only way to fade the retopology
+    wireframe -- with the caveat, stated in the panel, that it is a viewport
+    setting and therefore applies to every object showing a wireframe there.
+    """
+    opacity = context.scene.plasticity_retop.result_wire_opacity
+    for window in context.window_manager.windows:
+        screen = window.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            for space in area.spaces:
+                if space.type == 'VIEW_3D':
+                    space.overlay.wireframe_opacity = opacity
+
+
 # --- datablock creation and undo ---
 #
 # Creating or freeing an ID (material, mesh, object, collection) outside of an
@@ -506,6 +737,9 @@ def ensure_result_object(context, source_obj):
     result_name = result_object_name_for(source_obj)
     result_obj = bpy.data.objects.get(result_name)
     if result_obj is not None:
+        # Retopology made before the hierarchy was mirrored sits flat at the
+        # top of Retop; move it in, but only from there (see place_result_object).
+        place_result_object(context, result_obj, source_obj, only_if_unplaced=True)
         return result_obj
 
     coll = get_or_create_collection(context)
@@ -521,6 +755,7 @@ def ensure_result_object(context, source_obj):
     # doesn't visually dominate the viewport once you've moved on.
     _resting_result_appearance(result_obj, tuple(context.scene.plasticity_retop.result_color))
     _apply_result_offset(context, result_obj)
+    place_result_object(context, result_obj, source_obj)
     return result_obj
 
 
@@ -584,6 +819,16 @@ def _apply_result_look(result_obj, color, alpha, material_name, in_front, wire):
     result_obj.show_all_edges = wire
 
 
+def _wire_wanted(state, emphasized):
+    """Whether an emphasized (in-session) result mesh shows its wireframe.
+
+    Deliberately scoped to the session: a resting result mesh has never shown
+    its wireframe and still doesn't, so finished retopology stops dominating
+    the viewport once you have moved on from it.
+    """
+    return bool(state.result_show_wire and emphasized)
+
+
 def _resting_result_appearance(result_obj, color):
     """Neutral, always-on look: same color so it still reads as "retopped",
     but opaque and without the in-front/wireframe emphasis used in-session.
@@ -595,7 +840,10 @@ def iter_result_objects(context):
     coll = bpy.data.collections.get(COLLECTION_NAME)
     if coll is None:
         return []
-    return [o for o in coll.objects if o.name.endswith(RESULT_NAME_SUFFIX)]
+    # all_objects, not objects: result meshes are nested under a mirror of the
+    # source object's Plasticity collection path (see place_result_object), so
+    # a flat scan would miss every one of them.
+    return [o for o in coll.all_objects if o.name.endswith(RESULT_NAME_SUFFIX)]
 
 
 def orphan_result_objects(context):
@@ -625,6 +873,11 @@ def refresh_result_appearance(context):
     """
     state = context.scene.plasticity_retop
     color = tuple(state.result_color)
+    # Whether the retopology draws over everything else, or is occluded like
+    # any other object. A setting rather than a consequence of the session: it
+    # is the only way to check the result sits *on* the surface instead of
+    # hovering off it, and that is a thing you want to check mid-session.
+    see_through = state.result_see_through
     active_name = ""
     if state.session_active and state.session_object_name:
         source_obj = bpy.data.objects.get(state.session_object_name)
@@ -636,12 +889,16 @@ def refresh_result_appearance(context):
 
         if result_obj.name == active_name:
             _apply_result_look(result_obj, color, state.result_alpha,
-                               RESULT_MATERIAL_NAME, in_front=True, wire=True)
+                               RESULT_MATERIAL_NAME, in_front=see_through,
+                               wire=_wire_wanted(state, True))
         elif state.session_active and state.highlight_all_results:
             _apply_result_look(result_obj, color, state.inactive_result_alpha,
-                               RESULT_DIM_MATERIAL_NAME, in_front=False, wire=True)
+                               RESULT_DIM_MATERIAL_NAME, in_front=False,
+                               wire=_wire_wanted(state, True))
         else:
             _resting_result_appearance(result_obj, color)
+
+    apply_wireframe_opacity(context)
 
 
 def set_result_highlight(context, source_obj, active):
@@ -680,6 +937,12 @@ def update_preview_object(context, source_obj, result, corner_source_ids=None):
     verts = [tuple(v) for v in result.verts]
     mesh.from_pydata(verts, [], result.faces)
     mesh.update()
+
+    # One patch is one CAD surface: no creases inside it, so smooth shading
+    # alone makes the preview read like the committed result will.
+    smooth = context.scene.plasticity_retop.result_shade_smooth
+    if mesh.polygons:
+        mesh.polygons.foreach_set("use_smooth", [smooth] * len(mesh.polygons))
 
     uv_layer = mesh.uv_layers.get("UVMap") or mesh.uv_layers.new(name="UVMap")
     for poly in mesh.polygons:
@@ -869,8 +1132,359 @@ def commit_preview_to_result(context, source_obj, face_id=None):
     result_obj.data.update()
     bm.free()
 
+    # Creases can only be decided once the new patch is in place: sharpness is
+    # a property of the border *between* patches, so committing a neighbour
+    # changes the shading of an edge that already existed.
+    apply_result_shading(context, result_obj)
+
     clear_preview_object()
 
     if skipped:
         return result_obj, None  # committed; a few faces already existed and were skipped
     return result_obj, None
+
+
+# --- matching a committed neighbour exactly ----------------------------
+#
+# Copying a neighbour's segment *count* is not enough to weld to it, and the
+# difference is invisible until you look at the vertices: the two patches only
+# land on the same points if they also divide the same polyline the same way.
+# They often don't -- a neighbour committed as an n-gon put its points where the
+# boundary curves, not at even spacing, and a grid resampling evenly to the same
+# count lands between them every time.
+#
+# So a match reads the neighbour's *actual* committed boundary vertices. What
+# makes that cheap to use is `geometry.resample_polyline_by_arclength`: asked
+# for exactly as many points as it was given, it returns them untouched. Feed a
+# side those points, tell the generator to put len-1 segments along it, and
+# every generator -- Quad, Triangle, N-Side, Wedge, Ring, N-gon, none of them
+# modified -- reproduces them exactly.
+
+
+def _distance_to_polyline(point, polyline):
+    """(distance, arc length at the closest point) of `point` on `polyline`."""
+    best_distance = float("inf")
+    best_at = 0.0
+    travelled = 0.0
+    for start, end in zip(polyline, polyline[1:]):
+        segment = end - start
+        length = segment.length
+        if length < 1e-12:
+            continue
+        t = max(0.0, min(1.0, (point - start).dot(segment) / (length * length)))
+        distance = (point - (start + segment * t)).length
+        if distance < best_distance:
+            best_distance = distance
+            best_at = travelled + t * length
+        travelled += length
+    return best_distance, best_at
+
+
+# Committed boundary vertices, grouped by the patch that owns them and cached
+# per (result mesh contents, transform). Walking the result mesh is what a
+# hover used to spend most of its time on, and the grouping is what lets a
+# match aim at the patch actually across a side instead of at everything in
+# reach -- see `operators.build_side_references`.
+_boundary_cache = {}
+_BOUNDARY_CACHE_LIMIT = 4
+
+
+def invalidate_boundary_cache():
+    _boundary_cache.clear()
+
+
+def committed_boundary_map(source_obj):
+    """{patch face id: [boundary vertex, ...]} in the source object's local
+    space, over the whole committed result mesh.
+
+    A vertex can be on the boundary of two patches at once (that is the point
+    of welding), and it is listed under both -- the caller asks "which of these
+    patches' vertices lie along my side", and either answer is right.
+
+    Faces committed before patch tracking existed carry `NO_PATCH`; they are
+    kept under that key rather than dropped, so old retopology stays matchable.
+    """
+    result_obj = bpy.data.objects.get(result_object_name_for(source_obj))
+    if result_obj is None or not result_obj.data.polygons:
+        return {}
+
+    mesh = result_obj.data
+    to_source_local = source_obj.matrix_world.inverted() @ result_obj.matrix_world
+    key = result_obj.name
+    fingerprint = (source_obj.name,
+                   patch_data.mesh_fingerprint(mesh),
+                   tuple(to_source_local[row][col] for row in range(4) for col in range(4)))
+    cached = _boundary_cache.get(key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+
+    patch_ids = _patch_ids_of_faces(mesh)
+
+    # Boundary-flagged verts only -- an interior vertex that happens to pass
+    # near a side is not something to weld to. Non-fatal: retopology committed
+    # before the flag existed has none, and all of its vertices stay eligible.
+    boundary_attr = mesh.attributes.get(BOUNDARY_ATTR)
+    flags = None
+    if boundary_attr is not None:
+        flags = [0] * len(mesh.vertices)
+        boundary_attr.data.foreach_get("value", flags)
+        if not any(flags):
+            flags = None
+
+    grouped = {}
+    for poly in mesh.polygons:
+        face_id = patch_ids[poly.index] if patch_ids else NO_PATCH
+        bucket = grouped.setdefault(face_id, set())
+        for index in poly.vertices:
+            if flags is None or flags[index]:
+                bucket.add(index)
+
+    # Result geometry is stored in the same space the preview was built in
+    # (see commit_preview_to_result); sides are in the source object's local one.
+    result = {face_id: [to_source_local @ mesh.vertices[i].co for i in sorted(indices)]
+              for face_id, indices in grouped.items()}
+
+    if len(_boundary_cache) >= _BOUNDARY_CACHE_LIMIT:
+        _boundary_cache.pop(next(iter(_boundary_cache)))
+    _boundary_cache[key] = (fingerprint, result)
+    return result
+
+
+def committed_boundary_points(source_obj, exclude_face_id=None, only_face_ids=None):
+    """Committed retopology vertices a side could be matched onto, in the
+    source object's local space.
+
+    `exclude_face_id` drops the patch being edited, whose own geometry would
+    otherwise match itself. `only_face_ids`, when given, keeps just those
+    patches -- that is how a side aims at the neighbour actually across it
+    rather than at whatever committed geometry happens to pass nearby.
+
+    Given neither, the answer is every committed patch. That is the right
+    default for a first look: a side can run against two committed patches in
+    sequence (the boundary between them falls mid-side whenever the angle test
+    didn't put a corner there), and asking only the majority one back yields
+    half a side's worth of points.
+    """
+    grouped = committed_boundary_map(source_obj)
+    wanted = set(grouped) if only_face_ids is None else (set(only_face_ids) & set(grouped))
+    return flatten_boundary_points(grouped, wanted, exclude_face_id)
+
+
+def flatten_boundary_points(grouped, face_ids, exclude_face_id=None):
+    """The vertices of `face_ids` out of a `committed_boundary_map`, deduped.
+
+    Deduped because a welded vertex is listed under every patch that owns it,
+    and a match counting it twice reads two neighbour vertices where there is
+    one -- which is one segment too many along the side.
+    """
+    seen = set()
+    points = []
+    for face_id in face_ids:
+        if face_id == exclude_face_id:
+            continue
+        for point in grouped.get(face_id, ()):  # noqa: B905
+            key = (round(point.x, 9), round(point.y, 9), round(point.z, 9))
+            if key not in seen:
+                seen.add(key)
+                points.append(point)
+    return points if len(points) >= 2 else []
+
+
+def match_side_to_points(pool, side_points, tolerance):
+    """Which of `pool` lie along this side, in order, or (None, reason).
+
+    `reason` says which check refused -- an opaque "nothing to match" on a side
+    that visibly touches a retopologized neighbour is impossible to act on.
+    """
+    if len(side_points) < 2:
+        return None, "side has no length"
+    if len(pool) < 2:
+        return None, "nothing committed yet"
+
+    found = []
+    for point in pool:
+        distance, at = _distance_to_polyline(point, side_points)
+        if distance <= tolerance:
+            found.append((at, point))
+    if not found:
+        return None, "no committed neighbour"
+    if len(found) < 2:
+        # One point is not something to follow: a side shorter than the
+        # neighbour's own vertex spacing has nothing to match along it, and
+        # saying so beats "no neighbour" on a side that is visibly against one.
+        return None, "only one committed vertex along this side"
+
+    found.sort(key=lambda item: item[0])
+
+    # Drop duplicates at the same place along the side -- two patches meeting
+    # here both own the corner vertex.
+    ordered = [found[0][1]]
+    for _at, point in found[1:]:
+        if (point - ordered[-1]).length > tolerance:
+            ordered.append(point)
+    if len(ordered) < 2:
+        return None, "no committed neighbour"
+
+    # A *closed* side -- a cornerless loop, which is what a ring's rims and a
+    # disc's boundary are -- has one endpoint, not two: `resolve_side_points`
+    # returns `loop + [loop[0]]`. Asking for a committed vertex at both ends
+    # then asks for two at the same place and always refuses, which is why a
+    # bore's rim read as unmatchable while visibly bordering retopology.
+    if (side_points[0] - side_points[-1]).length <= tolerance:
+        return _close_matched_ring(ordered, side_points, tolerance)
+
+    # Endpoint coverage: without it a neighbour touching part of the side hands
+    # back a count that cannot line up along the rest -- the silent half-cell
+    # offset this exists to prevent.
+    if (ordered[0] - side_points[0]).length > tolerance:
+        return None, "neighbour stops short of this side's start"
+    if (ordered[-1] - side_points[-1]).length > tolerance:
+        return None, "neighbour stops short of this side's end"
+
+    return ordered, ""
+
+
+# What "covers the whole loop" means for a closed side. A gap has to be both a
+# large share of the loop *and* far bigger than the others: a neighbour that is
+# simply coarse has every gap the same size -- a square inscribed in a circle
+# already leaves 22% between points -- while one covering half the rim leaves
+# one huge gap among small ones. Testing the share alone refused coarse but
+# perfectly matchable neighbours.
+CLOSED_SIDE_MAX_GAP = 0.25
+CLOSED_SIDE_GAP_RATIO = 3.0
+
+
+def _close_matched_ring(ordered, side_points, tolerance):
+    """Turn matched points on a closed side into a closed polyline, or refuse.
+
+    One thing has to hold: the neighbour must reach all the way round, checked
+    as the largest *gap* between consecutive points, since "both ends covered"
+    means nothing on a loop.
+
+    What is deliberately **not** required is a neighbour vertex on the side's
+    start point. That start is arbitrary -- a cornerless loop begins wherever
+    the half-edge walk happened to, so the "corner" there is not a B-rep vertex
+    and nothing else in the model agrees on it. Insisting on one refused every
+    real case: a disc committed as a Quad puts its points at arc-length
+    resamples from *its own* synthesised corners, which land nowhere near.
+    The points are rotated to lead with whichever is nearest instead, and the
+    caller drops that side's corner id (see `apply_side_matches`) so nothing
+    tries to weld by an identity that has moved.
+    """
+    total = sum((b - a).length for a, b in zip(side_points, side_points[1:]))
+    if total <= 0.0:
+        return None, "side has no length"
+
+    gaps = sorted((b - a).length for a, b in zip(ordered, ordered[1:]))
+    gaps.append((ordered[0] - ordered[-1]).length)  # the wrap
+    gaps.sort()
+    largest = gaps[-1]
+    median = gaps[len(gaps) // 2]
+    if (largest > total * CLOSED_SIDE_MAX_GAP
+            and largest > median * CLOSED_SIDE_GAP_RATIO):
+        return None, "neighbour only covers part of this loop"
+
+    start = side_points[0]
+    at_start = min(range(len(ordered)), key=lambda i: (ordered[i] - start).length)
+
+    # Rotate so that point leads, then repeat it to close the loop -- the same
+    # shape `resolve_side_points` hands the generators for a cornerless loop.
+    rotated = ordered[at_start:] + ordered[:at_start]
+    rotated.append(rotated[0].copy())
+    return rotated, ""
+
+
+def side_match_tolerance(state, side_points, margin=False, reference_length=None):
+    """How far off the boundary a committed vertex may sit and still count as
+    being on it.
+
+    Two answers, deliberately. Both patches usually resample the same polyline,
+    so the real distance is ~0 and the strict tolerance is float slack. That is
+    what the *automatic* matching uses: it fires without being asked, so it must
+    never reach for something that only happens to be nearby. `margin=True` is
+    the picker's answer, widened by `match_margin`: pointing at a side is saying
+    which neighbour you mean, so it can afford to reach one that has drifted --
+    a coarse neighbour whose chords sag off a curved boundary, or two CAD edges
+    tessellated slightly differently.
+
+    Both are a share of `reference_length`, which callers should set to the
+    **patch's** longest side rather than let it default to this side's own.
+    A neighbour's drift is an absolute distance; scaling by the side made a
+    short side's margin vanish while the long side next to it matched fine, so
+    a stub between two retopped faces refused for no reason the user could see.
+    Every side of one patch gets the same absolute reach.
+    """
+    if reference_length is None:
+        reference_length = sum((b - a).length
+                               for a, b in zip(side_points, side_points[1:]))
+    strict = max(state_mod.to_blender_units(state, state.boundary_weld_distance),
+                 reference_length * 1e-3, 1e-9)
+    if not margin:
+        return strict
+    return max(strict, reference_length * state.match_margin / 100.0)
+
+
+# --- Local View ('/') ---------------------------------------------------
+#
+# Blender's isolate only carries the objects that were selected when it was
+# entered, so isolating a CAD surface leaves its `<Source>_Retop` mesh and the
+# live preview behind -- exactly the two things you want to keep looking at
+# while retopping it. These pull them back in.
+#
+# `local_view_set` only flips a per-viewport visibility flag on the object: no
+# ID is created or freed, so this is safe to call outside an undo step.
+
+
+def local_view_spaces(context):
+    """Every 3D viewport currently in Local View, across all open windows."""
+    spaces = []
+    for window in context.window_manager.windows:
+        screen = window.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            for space in area.spaces:
+                if space.type == 'VIEW_3D' and space.local_view is not None:
+                    spaces.append(space)
+    return spaces
+
+
+def sync_local_view(context):
+    """Add the preview and the relevant result meshes to every viewport that is
+    in Local View. Returns how many objects were added.
+
+    Only the retopology of a source object that is *itself* isolated in that
+    viewport is added -- pulling in every result mesh would drag unrelated
+    geometry into an isolated view. No-op when the setting is off.
+    """
+    if not context.scene.plasticity_retop.local_view_include_retop:
+        return 0
+
+    spaces = local_view_spaces(context)
+    if not spaces:
+        return 0
+
+    # local_view_set() needs the object to be in the view layer.
+    view_objects = set(context.view_layer.objects)
+    results = iter_result_objects(context)
+    preview = bpy.data.objects.get(PREVIEW_OBJ_NAME)
+
+    added = 0
+    for space in spaces:
+        wanted = []
+        if preview is not None:
+            wanted.append(preview)
+        for result in results:
+            source = source_object_for_result(result)
+            if (source is not None and source in view_objects
+                    and source.local_view_get(space)):
+                wanted.append(result)
+
+        for obj in wanted:
+            if obj not in view_objects or obj.local_view_get(space):
+                continue
+            obj.local_view_set(space, True)
+            added += 1
+    return added

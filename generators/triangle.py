@@ -1,3 +1,4 @@
+from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
 
@@ -19,8 +20,7 @@ def _dedup_face(face):
 
 
 class TriangleGenerator(Generator):
-    name = "Triangle"
-    num_sides = 3
+    name = constants.TRIANGLE
 
     def matches(self, num_sides):
         return num_sides == 3

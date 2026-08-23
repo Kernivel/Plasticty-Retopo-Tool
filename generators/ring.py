@@ -21,6 +21,7 @@ propagated *out* of it, per side (see operators' commit path).
 """
 import math
 
+from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
 
@@ -85,6 +86,63 @@ def ring_from_sides(sides, total):
     return points, corner_indices, alloc
 
 
+# --- is this really a band? --------------------------------------------------
+#
+# Two boundary loops is a *topological* annulus, and this generator fills any
+# annulus. Whether it should is another question. A washer, a tube wall, a
+# fillet running all the way round a boss: the gap between the two loops is
+# roughly the same everywhere, and a ring of quads across it is exactly right.
+# A 200x100 plate with a 5mm hole is also an annulus, and filling it as a band
+# is a disaster -- both loops must end up with the same number of points, so
+# either the hole gets a hundred of them or the plate's outline gets twelve,
+# and every quad is stretched the width of the plate.
+#
+# The two are told apart by how *even* the gap is, and by how far apart the two
+# perimeters are. Both limits are deliberately generous: a band whose hole is a
+# different shape from its outer boundary is still a band, and the cost of
+# calling one a plate is worse than the cost of the reverse.
+BAND_GAP_SPREAD = 4.0       # widest gap over narrowest, sampled around the loop
+BAND_PERIMETER_RATIO = 6.0  # outer perimeter over inner
+
+
+def band_gaps(loops, samples=16):
+    """Distance from a sample of outer-loop points to the nearest inner-loop
+    point, walking the outer boundary."""
+    outer = [p for side in loops[0] for p in side]
+    inner = [p for side in loops[1] for p in side]
+    if not outer or not inner:
+        return []
+    step = max(1, len(outer) // samples)
+    return [min((p - q).length for q in inner) for p in outer[::step]]
+
+
+def is_band(loops):
+    """True when the two loops sit at a comparable distance all the way round,
+    i.e. when a ring of quads across them is the right fill. See above.
+    """
+    if len(loops) != 2:
+        return False
+
+    gaps = band_gaps(loops)
+    if len(gaps) < 3:
+        return False
+    widest = max(gaps)
+    if widest <= 1e-12:
+        return True  # the two loops coincide: degenerate either way, and a
+        # zero-width band is at least what the geometry says it is.
+    # Floored, so one sample landing on a point the two loops share cannot make
+    # an otherwise even band look infinitely uneven.
+    narrowest = max(min(gaps), widest * 1e-3)
+    if widest > narrowest * BAND_GAP_SPREAD:
+        return False
+
+    outer = sum(polyline_length(side) for side in loops[0])
+    inner = sum(polyline_length(side) for side in loops[1])
+    if inner <= 1e-12:
+        return False
+    return max(outer, inner) <= min(outer, inner) * BAND_PERIMETER_RATIO
+
+
 def around_count(loops, span_u):
     """Points around the ring for a given "around" span.
 
@@ -128,7 +186,7 @@ def align_rings(outer, inner):
 
 
 class RingGenerator(Generator):
-    name = "Ring"
+    name = constants.RING
 
     def matches(self, num_sides):
         return False  # chosen by loop count, never by side count

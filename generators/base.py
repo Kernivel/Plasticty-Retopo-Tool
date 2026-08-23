@@ -32,8 +32,12 @@ class GenerationResult:
 
 
 class Generator:
+    """A generator is identified by `name` (see constants) and selected by
+    `matches`, never by a declared side count -- Ring and N-gon are reached
+    directly, and the rest answer for a range.
+    """
+
     name = "base"
-    num_sides = None  # int, or None if the generator accepts a range
 
     def matches(self, num_sides):
         raise NotImplementedError
@@ -54,5 +58,13 @@ class Generator:
 
 
 def resolve_side_points(sides, positions):
-    """Convert vertex-index sides into Vector-point sides."""
-    return [[positions[vi] for vi in side] for side in sides]
+    """Convert vertex-index sides into Vector-point sides.
+
+    Copies every point: `positions` is the per-mesh table cached by
+    `patch_data.analyse`, shared by every caller, and a generator is free to
+    hand its input straight through into a preview mesh -- `resample_polyline_
+    by_arclength` returns the very objects it was given when the count already
+    matches. Without the copy, generating one patch could move a vertex the
+    next hover still believes is where the CAD put it.
+    """
+    return [[positions[vi].copy() for vi in side] for side in sides]

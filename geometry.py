@@ -2,7 +2,6 @@
 reprojection helpers, independent of any Blender operator/UI code so they can
 be unit-exercised from a --background script.
 """
-import mathutils
 
 
 def resample_polyline_by_arclength(points, count):
@@ -26,7 +25,6 @@ def resample_polyline_by_arclength(points, count):
 
     result = [points[0].copy()]
     target_step = total / (count - 1)
-    acc = 0.0
     seg_i = 0
     seg_acc = 0.0
 
@@ -129,23 +127,6 @@ def fan_collapsed_grid(side_ab, side_bc, side_ca):
     side_left = side_ca               # P01 (C) -> P00 (A), already in this order
 
     return coons_patch_grid(side_ab, side_bc, side_top, side_left, span_u, span_v)
-
-
-def project_points_to_surface(points, bvh, max_distance=1e6):
-    """Snap each point in `points` (iterable of Vector) to the nearest point
-    on the surface represented by `bvh` (mathutils.bvhtree.BVHTree).
-
-    Returns a new list in the same order; points that fail to find a hit
-    (shouldn't normally happen against a closed patch BVH) are left as-is.
-    """
-    result = []
-    for p in points:
-        hit = bvh.find_nearest(p, max_distance)
-        if hit is None or hit[0] is None:
-            result.append(p)
-        else:
-            result.append(hit[0])
-    return result
 
 
 def build_bvh_with_polygon_map(mesh):

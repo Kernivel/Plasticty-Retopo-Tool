@@ -1,3 +1,4 @@
+from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
 from .triangle import _dedup_face
@@ -9,8 +10,7 @@ class WedgeGenerator(Generator):
     span, as they must stay compatible along the whole patch.
     """
 
-    name = "Wedge"
-    num_sides = 2
+    name = constants.WEDGE
 
     def matches(self, num_sides):
         return num_sides == 2

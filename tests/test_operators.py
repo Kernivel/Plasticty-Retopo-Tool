@@ -495,8 +495,11 @@ check("Tab hint is hidden for non-quad patches (single span)",
       "Tab" not in [k for k, _a in pr.overlay.keybinds_for(state)],
       str([k for k, _a in pr.overlay.keybinds_for(state)]))
 state.session_phase = 'PATCH'
+# Alt+X and E ride along in every phase. Alt+X answers "is the retopology where
+# I think it is"; E draws the Plasticity edges, which is read while *choosing* a
+# surface as much as while adjusting one.
 check("patch phase overlay shows its own binds",
-      [k for k, _a in pr.overlay.keybinds_for(state)] == ["Click", "Esc"],
+      [k for k, _a in pr.overlay.keybinds_for(state)] == ["Click", "E", "Alt+X", "Esc"],
       str(pr.overlay.keybinds_for(state)))
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,10 @@
+from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
 
 
 class QuadGenerator(Generator):
-    name = "Quad"
-    num_sides = 4
+    name = constants.QUAD
 
     def matches(self, num_sides):
         return num_sides == 4

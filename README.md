@@ -60,10 +60,52 @@ on their propagated spans rather than the exact ones you originally typed.
 | `Ctrl` + wheel | Span +/- |
 | `0`–`9`, `Backspace` | Type a span directly |
 | `Tab` | Switch U/V (quad and wedge patches) |
+| `M` | Side highlight on/off |
+| Click a side | Match the committed neighbour across it |
+| `Ctrl` + click a side | Match that side's own CAD edge instead |
 | Right click / `Enter` | Commit |
 | `Esc` | Clear typing, then discard |
 
+| Key (any phase) | Action |
+|---|---|
+| `E` | Plasticity edges on/off |
+| `Ctrl` + `E` | Surface flow on/off |
+| `Alt` + `X` | Draw the retopology through everything on/off |
+| `/` | Isolate, retopology included |
+
 Wheel without `Ctrl` still zooms.
+
+## Matching a neighbour
+
+Two patches only weld if their shared boundary carries the *same vertices*, not
+merely the same count — a neighbour committed as an n-gon put its points where
+the boundary curves, and a grid resampling evenly to the same count lands
+between them every time. So a side takes the neighbour's own committed
+vertices, and the generator is told the count that reproduces them.
+
+With **Match Committed Neighbours** on (the default), that happens by itself on
+every side whose neighbour is already retopologized, for every generator. It
+only ever takes an exact match; the **Match Margin** is for sides you point at,
+where you have said which neighbour you mean.
+
+A side can only match the Plasticity faces it actually borders — the mesh
+records which face is across each boundary segment, so a patch running close by
+but not touching is never picked up. When a side's neighbour isn't
+retopologized yet, the panel and the status bar say which one it is waiting for.
+
+A grid has one span per *direction*, so two sides wanting different counts along
+the same axis cannot both be honoured: the pinned one wins, then the denser one,
+and the panel reports how many were outvoted. Only the winner's vertices are
+substituted, so a side that lost keeps the boundary the CAD drew rather than a
+resampled version of someone else's.
+
+Changing a span away from a neighbour's count releases that match — asking for a
+different count is asking not to weld — while a side you pinned by hand keeps
+its count regardless.
+
+`Ctrl` + click pins a side to its **own CAD tessellation** instead, thinned by
+curvature the way n-gon mode does it. That needs no neighbour at all, so it
+works on the first patch of a model and on any side facing nothing yet.
 
 ## Faces with a hole
 
@@ -73,16 +115,40 @@ filled with a band of quads running **around** the loops and **across** the gap
 between them. Those are the two spans; `Tab` switches which one the wheel
 drives. The panel names it `Ring (2 loops, N corners)`.
 
-The two loops are matched by arc length rather than by pairing their corners,
-so it does its best work when the hole roughly follows the outer boundary. A
-hole of a very different shape (or tucked into a corner) comes out distorted —
-splitting the face along an isoparm in Plasticity and refreshing through the
-bridge remains the better answer there, and the addon handles the pieces
-normally. Spans are propagated *out* of a ring to its neighbours, but not into
-it, since "around" is one number for the whole loop.
+Two loops is not the same thing as a band, though. A plate with a small hole is
+also bounded by two loops, and a band across it is a disaster: both loops must
+end up with the same number of points, so either the hole gets a hundred of them
+or the outline gets twelve, and every quad is stretched the width of the plate.
+Those faces are filled as an n-gon instead (outer boundary plus hole, bridged
+with two edges) and the panel says why.
+
+For a genuine band, the two loops are matched by arc length rather than by
+pairing their corners, so it does its best work when the hole roughly follows
+the outer boundary. Spans are propagated *out* of a ring to its neighbours, but
+not into it, since "around" is one number for the whole loop.
 
 More than one hole in a single face isn't handled: only the outer boundary is
 used and the panel says so, rather than quietly paving over the holes.
+
+## Seeing the CAD structure
+
+The bridge sends a triangle soup, so a Plasticity import reads as one
+undifferentiated field of triangles even though the mesh records which triangle
+belongs to which CAD face. Two overlays put that structure back (Display tab, or
+`E` / `Ctrl`+`E` during a session):
+
+- **CAD edges** — the borders between Plasticity faces, with a dot on every
+  B-rep vertex (the junctions where two CAD edges meet, which are also the only
+  points patches weld to each other by). Rebuilt from the face ids in the mesh:
+  exact, and needing no live bridge connection.
+- **Surface flow** — the grid each face would be retopologized into, at a low
+  density. Plasticity's own isoparametric curves are *not* in the bridge data;
+  the protocol carries no surface parameters at all. These are derived from each
+  face's boundary by the same Coons interpolation the generators use, which on a
+  fillet or a swept face lands very close to the real isoparms — but they are
+  derived, not imported.
+
+Both can be scoped to the whole object or to the patch under the cursor.
 
 ## Development
 
