@@ -63,17 +63,44 @@ B-rep vertex — the junction between two CAD edges. That is what
 `patch_data.build_directed_owners` / `boundary_neighbours_for_loop` recover,
 and what the topological corner detector runs on.
 
-**The bridge exports unwelded triangle soups** — vertices are not shared, even
-between two triangles of the same face. Any topology work must first go through
-`patch_data.build_weld_map()` (position-based KDTree merge). Skipping it makes
-every internal triangulation edge look like a patch boundary.
+**The bridge tessellates each face separately, so patch borders are
+duplicated.** The two faces meeting along a B-rep edge each carry their own
+copy of every vertex on it, at the same position under different indices. Any
+topology work must therefore go through `patch_data.build_weld_map()`
+(position-based KDTree merge) before it can tell a patch border from a hole:
+without it no boundary half-edge ever finds its opposite, so no patch can name
+its neighbour and the topological corner test and `cad_display` have nothing
+to run on.
+
+*Inside* one face is a separate question, and the code no longer assumes an
+answer. `build_weld_map` welds only `patch_data.weld_candidates` — the
+vertices lying on an edge Blender's own connectivity leaves unshared (fewer
+than two polygons on it). A vertex strictly inside a patch has a polygon on
+both sides of every edge it touches, which means its neighbours already share
+its index and there is no second copy of that point to merge it with. That
+makes the scoping safe whichever way the bridge behaves: where a face's
+triangles are natively shared the KD-tree only sees the borders, and where
+they are not, every edge carries one polygon, `weld_candidates` returns None,
+and the whole mesh goes in exactly as before (`tests/test_unwelded.py` pins
+that end, `tests/test_weld_scope.py` the other).
+
+The one behaviour genuinely given up: an interior vertex coincident with
+something is no longer merged. That is a T-junction, which a B-rep kernel does
+not emit, and merging it never affected the loops anyway.
+
+The epsilon is `1e-5` **absolute, in the mesh's local units, and no caller
+overrides it**. On a part whose coordinates run to a few hundred units the
+float32 ulp is already the same order, so two faces' independently rounded
+copies of a shared vertex can miss each other — which shows up as a phantom
+patch border, hence wrong corners, wrong side count, wrong generator. Suspect
+this before anything else when a patch dices strangely far from the origin.
 
 ## Architecture
 
 | Module | Role |
 |---|---|
 | `constants.py` | generator names and the sets built from them; imports nothing, so `overlay` can share them with `operators` |
-| `patch_data.py` | mesh → patches, weld map, boundary loops, **and the per-mesh cache all of that lives in** (`analyse`) |
+| `patch_data.py` | mesh → patches, weld map (scoped to border candidates), boundary loops, **and the per-mesh cache all of that lives in** (`analyse`) |
 | `sides.py` | corner detection (angle and/or topology), corner *ranking*, split loop into sides, merge small sides |
 | `geometry.py` | Coons/transfinite grids, arc-length resampling, BVH, reprojection |
 | `generators/` | one generator per patch type; `find_generator(n_sides)` picks the first match |

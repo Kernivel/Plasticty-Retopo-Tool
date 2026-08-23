@@ -11,7 +11,8 @@ patch (the edges where a patch touches a different patch or the outer boundary
 of the solid).
 
 **Everything here is cached per mesh** (see `analyse`). The parse walks every
-polygon, builds a KD-tree over every vertex and a directed-half-edge table over every triangle corner -- and the session used to redo all of it on *every mouse
+polygon, builds a KD-tree over the vertices that can carry a duplicate and a
+directed-half-edge table over every triangle corner -- and the session used to redo all of it on *every mouse
 move*, because hovering a patch re-prepares it. On a CAD part of any size that
 is the difference between a smooth hover and a stuttering one. Nothing in a
 Plasticity mesh changes while it is being retopologized, so the result is keyed
@@ -91,33 +92,112 @@ def _edge_key(a, b):
     return (a, b) if a < b else (b, a)
 
 
+def weld_candidates(mesh):
+    """The vertices a weld could possibly need to merge: those lying on an
+    edge that Blender's own connectivity leaves unshared (fewer than two
+    polygons on it). Returned as a sorted index array.
+
+    A vertex strictly inside a patch, whose every edge already has a polygon
+    on both sides, is by construction not coincident with anything -- two
+    triangles sharing an edge share its vertex indices, so there is no second
+    copy of that point to merge it with. Only the borders between patches,
+    which the bridge tessellates once per face, put two vertices at the same
+    position.
+
+    Returns None when *every* vertex qualifies, which is the caller's signal
+    to skip the filtering entirely. That is what a fully unwelded soup looks
+    like -- every edge carries one polygon -- and it is why scoping the weld
+    is safe whatever the bridge turns out to emit: a mesh with no native
+    interior sharing degrades exactly to the old whole-mesh behaviour.
+
+    Every step is `foreach_get` plus a numpy reduction, because the Python
+    version of this cost more than the KD-tree it exists to shrink: counting
+    edge uses by hand is one interpreted iteration per triangle *corner*,
+    which on a real part is more work than welding the whole mesh. Without
+    numpy the answer is None -- filtering nothing is always correct, only
+    slower.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    n_verts = len(mesh.vertices)
+    n_edges = len(mesh.edges)
+    n_loops = len(mesh.loops)
+    if not n_edges or not n_loops:
+        return None
+
+    try:
+        edge_of_loop = np.empty(n_loops, dtype=np.int32)
+        mesh.loops.foreach_get("edge_index", edge_of_loop)
+        edge_verts = np.empty(n_edges * 2, dtype=np.int32)
+        mesh.edges.foreach_get("vertices", edge_verts)
+    except (AttributeError, TypeError, RuntimeError, ValueError):
+        # A Blender without `MeshLoop.edge_index`: weld everything rather than
+        # guess at the connectivity.
+        return None
+
+    uses = np.bincount(edge_of_loop, minlength=n_edges)
+    free = uses < 2
+    if not free.any():
+        return None
+
+    on_free_edge = np.zeros(n_verts, dtype=bool)
+    on_free_edge[edge_verts.reshape(-1, 2)[free].ravel()] = True
+
+    if on_free_edge.all():
+        return None
+    return np.flatnonzero(on_free_edge)
+
+
 def build_weld_map(mesh, epsilon=1e-5):
     """Return a list mapping raw vertex index -> canonical "welded" vertex
-    index, merging all vertices within `epsilon` of each other.
+    index, merging vertices within `epsilon` of each other.
 
-    The Plasticity bridge exports triangle soups where vertices are NOT
-    shared even within a single CAD face (every triangle corner gets its own
-    coincident-position vertex, e.g. for per-corner normals). Boundary/edge
-    detection needs to treat coincident-position vertices as the same point,
-    or literally every internal triangulation edge looks like a patch
-    boundary. This mirrors a "Merge by Distance" pass, without actually
+    The Plasticity bridge tessellates each CAD face independently, so the two
+    faces meeting along a B-rep edge each carry their own copy of every vertex
+    on it. Boundary detection has to treat those copies as one point, or every
+    patch border reads as two unrelated free edges -- and, on a mesh whose
+    interior is *also* unshared, every internal triangulation edge looks like a
+    patch boundary too. This mirrors a "Merge by Distance" pass without
     modifying the mesh.
+
+    Only `weld_candidates` takes part: an interior vertex has nothing to merge
+    with, and leaving it out of the KD-tree both costs less and removes any
+    chance that proximity alone collapses two distinct points on a densely
+    tessellated fillet. When nothing can be excluded the whole mesh goes in,
+    which is the previous behaviour exactly.
+
+    `epsilon` is absolute, in the mesh's own local units. See the note in
+    CLAUDE.md: on a part far from the origin it is close enough to the float32
+    ulp that two faces' copies of a shared vertex can fail to meet.
     """
     from mathutils.kdtree import KDTree
 
     n = len(mesh.vertices)
-    kd = KDTree(n)
-    for i, v in enumerate(mesh.vertices):
-        kd.insert(v.co, i)
+    weld_id = list(range(n))
+
+    candidates = weld_candidates(mesh)
+    considered = range(n) if candidates is None else candidates
+    if len(considered) < 2:
+        return weld_id
+
+    coords = mesh.vertices
+    kd = KDTree(len(considered))
+    for i in considered:
+        kd.insert(coords[i].co, int(i))
     kd.balance()
 
-    weld_id = [-1] * n
-    for i, v in enumerate(mesh.vertices):
-        if weld_id[i] != -1:
+    claimed = bytearray(n)
+    for i in considered:
+        i = int(i)
+        if claimed[i]:
             continue
-        weld_id[i] = i
-        for _co, idx, _dist in kd.find_range(v.co, epsilon):
-            if weld_id[idx] == -1:
+        claimed[i] = 1
+        for _co, idx, _dist in kd.find_range(coords[i].co, epsilon):
+            if not claimed[idx]:
+                claimed[idx] = 1
                 weld_id[idx] = i
 
     return weld_id
