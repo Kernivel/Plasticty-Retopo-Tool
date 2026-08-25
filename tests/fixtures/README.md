@@ -16,33 +16,78 @@ blender tests/fixtures/TestCases.blend --background --python scripts/benchmark.p
 `scripts/deploy.py` skips `tests/`, so nothing here ships into Blender's addons
 folder.
 
+## The two files
+
+| File | | |
+|---|---|---|
+| `TestCases.plasticity` | 78 KB | The B-rep source. What the shapes actually *are*. |
+| `TestCases.blend` | 421 KB | What the bridge made of it. What the tests read. |
+
+Only the `.blend` is consumed by anything — nothing in the addon or the suite
+opens the `.plasticity` file, and opening it needs Plasticity itself. It is
+committed because it is the origin of the fixture, and without it the shapes
+can never be extended or re-exported: the `.blend` is a tessellation, and a
+tessellation cannot be edited back into the B-rep it came from.
+
+Two jobs it does, both of which the frozen-file rule below otherwise makes
+impossible:
+
+- **Adding a case.** Model the new shape here, export the whole file through
+  the bridge, and append *only the new object* to the `.blend`. Every existing
+  object stays byte-for-byte as it was, so every golden value survives.
+- **Re-saving the `.blend` for an older Blender** — see the version note below.
+
 ## Provenance
 
-Fill these in — they are what makes a surprising result diagnosable a year from
-now, and none of it is recoverable from the file itself.
+What makes a surprising result diagnosable a year from now.
 
 | | |
 |---|---|
-| Plasticity version | _TODO_ |
+| Plasticity version | 26.1.3 |
 | Bridge addon version | _TODO_ |
-| Blender that saved the file | 5.0.1 (`a3db93c5b259`) |
+| Blender that saved the `.blend` | 5.0.1 (`a3db93c5b259`) |
 | Added | 2026-08-25 |
+
+The Plasticity version is not a note anyone has to maintain — it is in the
+`.plasticity` file itself, as a JSON header a little way in:
+
+```bash
+head -c 96 tests/fixtures/TestCases.plasticity   # ..."generator":"Plasticity 26.1.3"
+```
+
+The bridge version is the one thing genuinely unrecoverable from either file,
+and it is the layer most likely to change what arrives in Blender.
 
 **The Blender version matters.** `.blend` is forward-compatible but not
 backward: a file saved by 5.0 is not guaranteed to open correctly in 4.2, which
-is what `bl_info` currently declares as the minimum. Either re-save this from
-the oldest Blender actually supported, or raise `bl_info` to match what gets
-tested. Right now those two numbers disagree.
+is what `bl_info` currently declares as the minimum. Right now those two
+numbers disagree — either raise `bl_info` to match what actually gets tested,
+or rebuild the `.blend` by re-exporting `TestCases.plasticity` through the
+bridge from the oldest Blender supported.
 
-## Treat the file as frozen
+That second path is less destructive than the frozen-file rule below makes it
+sound, because the tessellation comes from **Plasticity, not Blender** — the
+bridge only receives a mesh. A re-export at the same settings ought therefore
+to produce identical vertices and leave every golden value standing. Ought to:
+that has not been verified, so treat a re-export as a change to be checked
+against `test_fixtures.py` rather than assumed safe. If the goldens survive, it
+was free; if they move, the tessellation is not as reproducible as it looks and
+that is worth knowing on its own.
 
-Never re-export the existing objects in place. A fresh export re-tessellates,
-every vertex moves slightly, and every golden value in `test_fixtures.py` moves
-with it — at which point a real regression is indistinguishable from a
-re-export. Git also stores each re-save as a whole new blob, forever.
+## Treat the `.blend` as frozen
 
-New cases go in as **new objects appended** to this file, or as a second file.
-Adding an object leaves every existing expectation untouched.
+Never re-export the existing objects in place *without checking*. If a fresh
+export re-tessellates, every vertex moves slightly and every golden value in
+`test_fixtures.py` moves with it — at which point a real regression is
+indistinguishable from a re-export. Git also stores each re-save as a whole new
+blob, forever.
+
+New cases go in as **new objects appended** to the `.blend`, modelled in the
+`.plasticity` file alongside the existing ones. Adding an object leaves every
+existing expectation untouched, which is the whole point.
+
+The `.plasticity` file is the opposite: it is the working file and is *meant*
+to be edited. It carries no golden values, and nothing reads it.
 
 ## What each object is for
 
