@@ -1,7 +1,14 @@
+from typing import TYPE_CHECKING, Any
+
+import mathutils
+
 from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
 from .triangle import _dedup_face
+
+if TYPE_CHECKING:
+    from mathutils.bvhtree import BVHTree
 
 
 class WedgeGenerator(Generator):
@@ -12,10 +19,10 @@ class WedgeGenerator(Generator):
 
     name = constants.WEDGE
 
-    def matches(self, num_sides):
+    def matches(self, num_sides: int) -> bool:
         return num_sides == 2
 
-    def default_spans(self, sides):
+    def default_spans(self, sides: list[list[mathutils.Vector]]) -> dict[str, int]:
         seg_lengths = []
         side_lengths = []
         for side in sides:
@@ -31,7 +38,12 @@ class WedgeGenerator(Generator):
         span_u = max(2, round(avg_side / max(target_edge, 1e-6)))
         return {"span_u": span_u, "span_v": 1}
 
-    def generate(self, sides, span_settings, bvh=None):
+    def generate(
+        self,
+        sides: list[list[mathutils.Vector]],
+        span_settings: dict[str, Any],
+        bvh: "BVHTree | None" = None,
+    ) -> GenerationResult:
         if len(sides) != 2:
             raise ValueError("WedgeGenerator expects exactly 2 sides")
 

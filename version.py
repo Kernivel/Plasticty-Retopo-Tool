@@ -9,8 +9,8 @@ import os
 import re
 import time
 
-ADDON_VERSION = "0.33.0"
-BUILD_ID = "2026-08-23-a"
+ADDON_VERSION = "0.34.0"
+BUILD_ID = "2026-08-25-a"
 
 _VERSION_RE = re.compile(
     r'^(ADDON_VERSION|BUILD_ID)\s*=\s*"([^"]*)"', re.MULTILINE)
@@ -18,10 +18,10 @@ _VERSION_RE = re.compile(
 # The panel redraws on every mouse move during a session, so the file is read
 # at most this often.
 _DISK_TTL_SECONDS = 2.0
-_disk_cache = (0.0, None)
+_disk_cache: tuple[float, tuple[str, str] | None] = (0.0, None)
 
 
-def deployed_version():
+def deployed_version() -> tuple[str, str] | None:
     """(version, build) as this file reads *on disk*, or None if unreadable.
 
     Different from the constants above exactly when a deploy has landed but the
@@ -54,11 +54,11 @@ def deployed_version():
     return result
 
 
-def running_version():
+def running_version() -> tuple[str, str]:
     return (ADDON_VERSION, BUILD_ID)
 
 
-def stale_load():
+def stale_load() -> tuple[str, str] | None:
     """(disk_version, disk_build) when what's on disk isn't what's running,
     else None. False for an unreadable file: an unknown is not a mismatch.
     """

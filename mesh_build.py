@@ -33,8 +33,19 @@ import mathutils
 import json
 import math
 
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any
+
 from . import patch_data
 from . import state as state_mod
+
+if TYPE_CHECKING:
+    from . import generators
+
+# What `committed_boundary_map` hands back: a committed patch's boundary
+# vertices, in the *source* object's local space, keyed by the face id owning
+# them (NO_PATCH for retopology that predates patch tracking).
+CommittedMap = dict[int, list[mathutils.Vector]]
 
 PREVIEW_OBJ_NAME = "RetopPreview"
 RESULT_NAME_SUFFIX = "_Retop"
@@ -63,16 +74,16 @@ NO_SOURCE = -1
 NO_PATCH = -1
 
 
-def result_object_name_for(source_obj):
+def result_object_name_for(source_obj: bpy.types.Object) -> str:
     return f"{source_obj.name}{RESULT_NAME_SUFFIX}"
 
 
-def _span_key(corner_a, corner_b):
+def _span_key(corner_a: int, corner_b: int) -> str:
     lo, hi = (corner_a, corner_b) if corner_a <= corner_b else (corner_b, corner_a)
     return f"{lo}_{hi}"
 
 
-def get_span_registry(result_obj):
+def get_span_registry(result_obj: bpy.types.Object) -> dict[str, int]:
     """{ "cornerA_cornerB": span_int } for every committed patch side, keyed
     by the (order-independent) pair of corner source-vertex ids at its ends.
     Persisted as a JSON string custom property so it survives save/reload
@@ -87,15 +98,21 @@ def get_span_registry(result_obj):
         return {}
 
 
-def save_span_registry(result_obj, registry):
+def save_span_registry(
+    result_obj: bpy.types.Object, registry: dict[str, int]
+) -> None:
     result_obj[SPAN_REGISTRY_PROP] = json.dumps(registry)
 
 
-def lookup_span(registry, corner_a, corner_b):
+def lookup_span(
+    registry: dict[str, int], corner_a: int, corner_b: int
+) -> int | None:
     return registry.get(_span_key(corner_a, corner_b))
 
 
-def lookup_propagated_span(source_obj, corner_a, corner_b):
+def lookup_propagated_span(
+    source_obj: bpy.types.Object, corner_a: int, corner_b: int
+) -> int | None:
     """Convenience for operators.py: look up a side's span directly from the
     source object, without the caller needing to know about the result
     object / registry plumbing. Returns None if there's no committed result
@@ -107,7 +124,11 @@ def lookup_propagated_span(source_obj, corner_a, corner_b):
     return lookup_span(get_span_registry(result_obj), corner_a, corner_b)
 
 
-def register_patch_spans(source_obj, corner_source_ids, spans_per_side):
+def register_patch_spans(
+    source_obj: bpy.types.Object,
+    corner_source_ids: list[int],
+    spans_per_side: list[int],
+) -> None:
     """Record the span used along each side of a just-committed patch, so
     future neighboring patches can propagate it. No-op if the result object
     doesn't exist yet (shouldn't happen right after a commit, but be safe).
@@ -134,7 +155,9 @@ def register_patch_spans(source_obj, corner_source_ids, spans_per_side):
 # copy on top of them (see commit_preview_to_result's `face_id`).
 
 
-def get_patch_settings_table(result_obj):
+def get_patch_settings_table(
+    result_obj: bpy.types.Object,
+) -> dict[str, dict[str, Any]]:
     """{ "<face_id>": {"span_u": .., "span_v": .., "span": .., "generator": ..} }
     for every committed patch. JSON custom property, like the span registry.
     """
@@ -148,11 +171,20 @@ def get_patch_settings_table(result_obj):
     return table if isinstance(table, dict) else {}
 
 
-def save_patch_settings_table(result_obj, table):
+def save_patch_settings_table(
+    result_obj: bpy.types.Object, table: dict[str, dict[str, Any]]
+) -> None:
     result_obj[PATCH_SPANS_PROP] = json.dumps(table)
 
 
-def register_patch_settings(source_obj, face_id, span_u, span_v, span, generator_name):
+def register_patch_settings(
+    source_obj: bpy.types.Object,
+    face_id: int,
+    span_u: int,
+    span_v: int,
+    span: int,
+    generator_name: str,
+) -> None:
     """Record what a just-committed patch was built with, so re-selecting it
     later comes back with those exact spans rather than recomputed defaults.
     """
@@ -169,7 +201,9 @@ def register_patch_settings(source_obj, face_id, span_u, span_v, span, generator
     save_patch_settings_table(result_obj, table)
 
 
-def lookup_patch_settings(source_obj, face_id):
+def lookup_patch_settings(
+    source_obj: bpy.types.Object, face_id: int
+) -> dict[str, Any] | None:
     """The settings a patch was committed with, or None if it was never
     committed (or predates this bookkeeping).
     """
@@ -179,7 +213,7 @@ def lookup_patch_settings(source_obj, face_id):
     return get_patch_settings_table(result_obj).get(str(face_id))
 
 
-def forget_patch_settings(source_obj, face_id):
+def forget_patch_settings(source_obj: bpy.types.Object, face_id: int) -> bool:
     """Drop the record of what a patch was committed with.
 
     Called when its geometry is deleted for good. The *span registry* is
@@ -199,7 +233,7 @@ def forget_patch_settings(source_obj, face_id):
     return True
 
 
-def _patch_ids_of_faces(mesh):
+def _patch_ids_of_faces(mesh: bpy.types.Mesh) -> list[int]:
     attr = mesh.attributes.get(PATCH_ID_ATTR)
     if attr is None or len(mesh.polygons) == 0:
         return []
@@ -208,7 +242,7 @@ def _patch_ids_of_faces(mesh):
     return values
 
 
-def committed_face_ids(source_obj):
+def committed_face_ids(source_obj: bpy.types.Object) -> set[int]:
     """Set of Plasticity face ids currently present in `source_obj`'s result
     mesh. Read from the mesh itself (not from the settings table), so a patch
     the user deleted by hand in Edit Mode stops counting as committed.
@@ -219,11 +253,13 @@ def committed_face_ids(source_obj):
     return {fid for fid in _patch_ids_of_faces(result_obj.data) if fid != NO_PATCH}
 
 
-def is_patch_committed(source_obj, face_id):
+def is_patch_committed(source_obj: bpy.types.Object, face_id: int) -> bool:
     return face_id in committed_face_ids(source_obj)
 
 
-def _source_patch_lookup(source_obj, result_obj):
+def _source_patch_lookup(
+    source_obj: bpy.types.Object, result_obj: bpy.types.Object
+) -> Callable[[mathutils.Vector], int | None] | None:
     """Return f(co) -> Plasticity face id for a point of `result_obj`'s mesh,
     by nearest source polygon, or None if the source has no usable geometry.
 
@@ -244,7 +280,7 @@ def _source_patch_lookup(source_obj, result_obj):
     # moved the result object since).
     to_source_local = source_obj.matrix_world.inverted() @ result_obj.matrix_world
 
-    def face_id_at(co):
+    def face_id_at(co: mathutils.Vector) -> int | None:
         hit = bvh.find_nearest(to_source_local @ co)
         if hit is None or hit[2] is None:
             return None
@@ -253,7 +289,7 @@ def _source_patch_lookup(source_obj, result_obj):
     return face_id_at
 
 
-def adopt_untracked_faces(source_obj):
+def adopt_untracked_faces(source_obj: bpy.types.Object) -> int:
     """Tag result faces that carry no patch id with the Plasticity face they
     sit on, and return how many were tagged.
 
@@ -329,7 +365,7 @@ def adopt_untracked_faces(source_obj):
 # Esc, by leaving the object, or by ending the session mid-edit.
 
 
-def _snapshot_result_mesh(result_obj):
+def _snapshot_result_mesh(result_obj: bpy.types.Object) -> str:
     backup = result_obj.data.copy()
     backup.name = f"{result_obj.name}{SNAPSHOT_NAME_SUFFIX}"
     # It has no users while it's just a snapshot; without this it can be purged.
@@ -337,7 +373,7 @@ def _snapshot_result_mesh(result_obj):
     return backup.name
 
 
-def restore_result_snapshot(result_obj_name, backup_mesh_name):
+def restore_result_snapshot(result_obj_name: str, backup_mesh_name: str) -> bool:
     """Put a snapshot back as `result_obj_name`'s mesh. Returns True if it did."""
     result_obj = bpy.data.objects.get(result_obj_name)
     backup = bpy.data.meshes.get(backup_mesh_name)
@@ -354,7 +390,7 @@ def restore_result_snapshot(result_obj_name, backup_mesh_name):
     return True
 
 
-def drop_result_snapshot(backup_mesh_name):
+def drop_result_snapshot(backup_mesh_name: str) -> None:
     """Throw away a snapshot (the re-edit was committed, so it's not needed)."""
     backup = bpy.data.meshes.get(backup_mesh_name)
     if backup is None:
@@ -364,7 +400,7 @@ def drop_result_snapshot(backup_mesh_name):
         bpy.data.meshes.remove(backup)
 
 
-def purge_stale_snapshots(keep_name=""):
+def purge_stale_snapshots(keep_name: str = "") -> int:
     """Delete snapshot meshes nothing is using any more, and return how many.
 
     A snapshot carries a fake user so it can't be purged while a re-edit is in
@@ -384,7 +420,9 @@ def purge_stale_snapshots(keep_name=""):
     return len(stale)
 
 
-def remove_patch_from_result(source_obj, face_id):
+def remove_patch_from_result(
+    source_obj: bpy.types.Object, face_id: int
+) -> tuple[int, str]:
     """Take patch `face_id`'s existing geometry out of the result mesh, after
     snapshotting it. Returns (removed_face_count, snapshot_mesh_name); the name
     is "" when nothing was removed (and no snapshot was taken).
@@ -431,7 +469,7 @@ def remove_patch_from_result(source_obj, face_id):
     return len(targets), backup_name
 
 
-def get_or_create_collection(context):
+def get_or_create_collection(context: bpy.types.Context) -> bpy.types.Collection:
     coll = bpy.data.collections.get(COLLECTION_NAME)
     if coll is None:
         coll = bpy.data.collections.new(COLLECTION_NAME)
@@ -450,7 +488,7 @@ def get_or_create_collection(context):
 # (ensure_result_object), never from a property callback or a draw handler.
 
 
-def _collection_parents():
+def _collection_parents() -> dict[str, bpy.types.Collection]:
     """child collection name -> parent collection. The scene master collection
     is not in bpy.data.collections, so a collection linked straight into the
     scene simply has no entry here and ends the walk.
@@ -462,7 +500,7 @@ def _collection_parents():
     return parents
 
 
-def source_collection_path(source_obj):
+def source_collection_path(source_obj: bpy.types.Object) -> list[str]:
     """The source object collection path *below* Inbox, outermost first.
 
     Empty when the object is not under an Inbox collection at all -- it was
@@ -496,7 +534,9 @@ def source_collection_path(source_obj):
     return path[inbox_at + 1:]
 
 
-def _child_collection(parent, name):
+def _child_collection(
+    parent: bpy.types.Collection, name: str
+) -> bpy.types.Collection | None:
     """A direct child of `parent` matching `name`, ignoring Blender .001
     disambiguation suffixes -- otherwise a name already taken elsewhere in the
     blend would make every session create yet another copy of the same level.
@@ -507,7 +547,9 @@ def _child_collection(parent, name):
     return None
 
 
-def ensure_collection_path(context, path):
+def ensure_collection_path(
+    context: bpy.types.Context, path: list[str]
+) -> bpy.types.Collection:
     """The collection at `path` under Retop, creating the levels it needs."""
     coll = get_or_create_collection(context)
     for name in path:
@@ -519,7 +561,12 @@ def ensure_collection_path(context, path):
     return coll
 
 
-def place_result_object(context, result_obj, source_obj, only_if_unplaced=False):
+def place_result_object(
+    context: bpy.types.Context,
+    result_obj: bpy.types.Object,
+    source_obj: bpy.types.Object,
+    only_if_unplaced: bool = False,
+) -> bpy.types.Collection | None:
     """Link `result_obj` into the mirror of the source object Inbox path.
 
     `only_if_unplaced` is for result meshes that already existed: they move
@@ -556,7 +603,9 @@ def place_result_object(context, result_obj, source_obj, only_if_unplaced=False)
 # would crease a curved patch own low-span interior edges instead.
 
 
-def _sharp_edge_flags(mesh, angle_threshold_deg):
+def _sharp_edge_flags(
+    mesh: bpy.types.Mesh, angle_threshold_deg: float
+) -> list[bool]:
     """Which edges of the result mesh are creases: patch borders where the two
     sides genuinely meet at an angle. A tangent border (a fillet running into
     the face it blends) stays smooth, which is the whole point of using the
@@ -592,7 +641,9 @@ def _sharp_edge_flags(mesh, angle_threshold_deg):
     return sharp
 
 
-def apply_result_shading(context, result_obj):
+def apply_result_shading(
+    context: bpy.types.Context, result_obj: bpy.types.Object
+) -> None:
     """Shade the result mesh smooth and re-mark its creases.
 
     Called after every commit and whenever the shading settings change. It
@@ -616,13 +667,13 @@ def apply_result_shading(context, result_obj):
     mesh.update()
 
 
-def refresh_result_shading(context):
+def refresh_result_shading(context: bpy.types.Context) -> None:
     """Re-shade every result mesh -- the shading settings are global."""
     for result_obj in iter_result_objects(context):
         apply_result_shading(context, result_obj)
 
 
-def apply_wireframe_opacity(context):
+def apply_wireframe_opacity(context: bpy.types.Context) -> None:
     """Push the wireframe opacity setting into every 3D viewport.
 
     Blender has no per-object wireframe opacity: `show_wire` is drawn by the
@@ -659,7 +710,7 @@ def apply_wireframe_opacity(context):
 # aren't there yet.
 
 
-def _create_material(name):
+def _create_material(name: str) -> bpy.types.Material:
     mat = bpy.data.materials.get(name)
     if mat is None:
         mat = bpy.data.materials.new(name)
@@ -667,12 +718,12 @@ def _create_material(name):
     return mat
 
 
-def _existing_material(name):
+def _existing_material(name: str) -> bpy.types.Material | None:
     """Look up a material without ever creating one -- safe from any context."""
     return bpy.data.materials.get(name)
 
 
-def ensure_materials():
+def ensure_materials() -> None:
     """Create the addon's materials up front, from a context allowed to create
     datablocks. Result meshes need two of them, not one: the mesh being worked
     on and the other retop meshes shown alongside it carry different alphas,
@@ -683,7 +734,9 @@ def ensure_materials():
     _create_material(RESULT_DIM_MATERIAL_NAME)
 
 
-def _apply_material_appearance(mat, color, alpha):
+def _apply_material_appearance(
+    mat: bpy.types.Material, color: tuple[float, float, float], alpha: float
+) -> None:
     bsdf = mat.node_tree.nodes.get("Principled BSDF") if mat.node_tree else None
     if bsdf:
         bsdf.inputs["Base Color"].default_value = (*color, 1.0)
@@ -700,7 +753,7 @@ def _apply_material_appearance(mat, color, alpha):
     mat.diffuse_color = (*color, alpha)
 
 
-def _apply_offset_modifier(obj, offset):
+def _apply_offset_modifier(obj: bpy.types.Object, offset: float) -> None:
     mod = obj.modifiers.get(OFFSET_MODIFIER_NAME)
     if offset == 0.0:
         if mod is not None:
@@ -714,7 +767,7 @@ def _apply_offset_modifier(obj, offset):
     mod.strength = offset
 
 
-def refresh_preview_appearance(context):
+def refresh_preview_appearance(context: bpy.types.Context) -> None:
     """Re-apply color/alpha/offset settings to the current preview object
     without touching its geometry -- cheap, called from property callbacks.
     """
@@ -729,7 +782,9 @@ def refresh_preview_appearance(context):
     _apply_offset_modifier(obj, state.preview_offset)
 
 
-def ensure_result_object(context, source_obj):
+def ensure_result_object(
+    context: bpy.types.Context, source_obj: bpy.types.Object
+) -> bpy.types.Object:
     """Return the retop result object for `source_obj`, creating an empty one
     if it doesn't exist yet. Called when entering a retop session (so there's
     something to highlight from the start) and by commit.
@@ -759,14 +814,16 @@ def ensure_result_object(context, source_obj):
     return result_obj
 
 
-def source_object_for_result(result_obj):
+def source_object_for_result(
+    result_obj: bpy.types.Object,
+) -> bpy.types.Object | None:
     """The Plasticity mesh a result object was built from, or None."""
     if not result_obj.name.endswith(RESULT_NAME_SUFFIX):
         return None
     return bpy.data.objects.get(result_obj.name[:-len(RESULT_NAME_SUFFIX)])
 
 
-def _auto_offset_for(source_obj):
+def _auto_offset_for(source_obj: bpy.types.Object | None) -> float:
     """A z-fighting offset proportional to the model, so it works unchanged on
     a 2mm fillet and on a 3m part without anyone typing a magic number.
     """
@@ -777,7 +834,9 @@ def _auto_offset_for(source_obj):
     return diagonal * AUTO_OFFSET_RATIO
 
 
-def _apply_result_offset(context, result_obj):
+def _apply_result_offset(
+    context: bpy.types.Context, result_obj: bpy.types.Object
+) -> None:
     """Push the result mesh off the CAD surface along its normals, purely so
     the two don't z-fight. Non-destructive (a Displace modifier) and flagged
     show_render=False, so the geometry that actually gets rendered/exported is
@@ -802,7 +861,14 @@ def _apply_result_offset(context, result_obj):
     mod.show_render = False
 
 
-def _apply_result_look(result_obj, color, alpha, material_name, in_front, wire):
+def _apply_result_look(
+    result_obj: bpy.types.Object,
+    color: tuple[float, float, float],
+    alpha: float,
+    material_name: str,
+    in_front: bool,
+    wire: bool,
+) -> None:
     # Get-only: this runs from appearance property callbacks, which must not
     # create datablocks (see the note above _create_material).
     mat = _existing_material(material_name)
@@ -819,7 +885,7 @@ def _apply_result_look(result_obj, color, alpha, material_name, in_front, wire):
     result_obj.show_all_edges = wire
 
 
-def _wire_wanted(state, emphasized):
+def _wire_wanted(state: state_mod.RetopPatchState, emphasized: bool) -> bool:
     """Whether an emphasized (in-session) result mesh shows its wireframe.
 
     Deliberately scoped to the session: a resting result mesh has never shown
@@ -829,14 +895,16 @@ def _wire_wanted(state, emphasized):
     return bool(state.result_show_wire and emphasized)
 
 
-def _resting_result_appearance(result_obj, color):
+def _resting_result_appearance(
+    result_obj: bpy.types.Object, color: tuple[float, float, float]
+) -> None:
     """Neutral, always-on look: same color so it still reads as "retopped",
     but opaque and without the in-front/wireframe emphasis used in-session.
     """
     _apply_result_look(result_obj, color, 1.0, RESULT_MATERIAL_NAME, in_front=False, wire=False)
 
 
-def iter_result_objects(context):
+def iter_result_objects(context: bpy.types.Context) -> list[bpy.types.Object]:
     coll = bpy.data.collections.get(COLLECTION_NAME)
     if coll is None:
         return []
@@ -846,7 +914,7 @@ def iter_result_objects(context):
     return [o for o in coll.all_objects if o.name.endswith(RESULT_NAME_SUFFIX)]
 
 
-def orphan_result_objects(context):
+def orphan_result_objects(context: bpy.types.Context) -> list[bpy.types.Object]:
     """Retopology meshes whose source object no longer exists under the name
     they were built from -- typically because the CAD object was renamed or
     re-imported since. They're invisible to everything here (patch tracking,
@@ -858,7 +926,7 @@ def orphan_result_objects(context):
             if source_object_for_result(o) is None and len(o.data.polygons) > 0]
 
 
-def refresh_result_appearance(context):
+def refresh_result_appearance(context: bpy.types.Context) -> None:
     """Apply the right look to every retop result mesh in one pass:
 
     - the one being worked on: full Result Appearance alpha, drawn in front
@@ -901,7 +969,9 @@ def refresh_result_appearance(context):
     apply_wireframe_opacity(context)
 
 
-def set_result_highlight(context, source_obj, active):
+def set_result_highlight(
+    context: bpy.types.Context, source_obj: bpy.types.Object, active: bool
+) -> None:
     """Kept as the call site used by session transitions; the actual decision
     for every result mesh is made by refresh_result_appearance from session
     state, so all of them stay consistent with each other.
@@ -909,7 +979,7 @@ def set_result_highlight(context, source_obj, active):
     refresh_result_appearance(context)
 
 
-def ensure_preview_object(context):
+def ensure_preview_object(context: bpy.types.Context) -> bpy.types.Object:
     """The preview object, created once and then reused for the whole session.
 
     Hovering used to create it and delete it again on every mouse move, which
@@ -930,7 +1000,12 @@ def ensure_preview_object(context):
     return obj
 
 
-def update_preview_object(context, source_obj, result, corner_source_ids=None):
+def update_preview_object(
+    context: bpy.types.Context,
+    source_obj: bpy.types.Object,
+    result: "generators.base.GenerationResult",
+    corner_source_ids: list[int] | None = None,
+) -> bpy.types.Object:
     obj = ensure_preview_object(context)
     mesh = obj.data
     mesh.clear_geometry()
@@ -985,7 +1060,7 @@ def update_preview_object(context, source_obj, result, corner_source_ids=None):
     return obj
 
 
-def has_preview():
+def has_preview() -> bool:
     """True when there is preview geometry to commit or discard. The preview
     object itself sticks around empty between patches, so its mere existence
     doesn't mean anything -- its polygons do.
@@ -994,7 +1069,7 @@ def has_preview():
     return obj is not None and len(obj.data.polygons) > 0
 
 
-def clear_preview_object():
+def clear_preview_object() -> None:
     """Empty the preview without deleting anything.
 
     Used everywhere inside a session (hover moved off a patch, patch committed,
@@ -1009,7 +1084,7 @@ def clear_preview_object():
     obj.data.update()
 
 
-def remove_preview_object():
+def remove_preview_object() -> None:
     """Drop the preview object for good -- session teardown only."""
     obj = bpy.data.objects.get(PREVIEW_OBJ_NAME)
     if obj is None:
@@ -1020,7 +1095,11 @@ def remove_preview_object():
         bpy.data.meshes.remove(mesh)
 
 
-def commit_preview_to_result(context, source_obj, face_id=None):
+def commit_preview_to_result(
+    context: bpy.types.Context,
+    source_obj: bpy.types.Object,
+    face_id: int | None = None,
+) -> tuple[bpy.types.Object | None, str | None]:
     """Bake the current preview object's *base* geometry (i.e. without the
     cosmetic offset modifier, in world space) into the persistent retop
     result mesh for `source_obj`, welding only corner vertices that share
@@ -1161,7 +1240,9 @@ def commit_preview_to_result(context, source_obj, face_id=None):
 # modified -- reproduces them exactly.
 
 
-def _distance_to_polyline(point, polyline):
+def _distance_to_polyline(
+    point: mathutils.Vector, polyline: list[mathutils.Vector]
+) -> tuple[float, float]:
     """(distance, arc length at the closest point) of `point` on `polyline`."""
     best_distance = float("inf")
     best_at = 0.0
@@ -1185,15 +1266,15 @@ def _distance_to_polyline(point, polyline):
 # hover used to spend most of its time on, and the grouping is what lets a
 # match aim at the patch actually across a side instead of at everything in
 # reach -- see `operators.build_side_references`.
-_boundary_cache = {}
+_boundary_cache: dict[str, tuple[tuple, CommittedMap]] = {}
 _BOUNDARY_CACHE_LIMIT = 4
 
 
-def invalidate_boundary_cache():
+def invalidate_boundary_cache() -> None:
     _boundary_cache.clear()
 
 
-def committed_boundary_map(source_obj):
+def committed_boundary_map(source_obj: bpy.types.Object) -> CommittedMap:
     """{patch face id: [boundary vertex, ...]} in the source object's local
     space, over the whole committed result mesh.
 
@@ -1250,7 +1331,11 @@ def committed_boundary_map(source_obj):
     return result
 
 
-def committed_boundary_points(source_obj, exclude_face_id=None, only_face_ids=None):
+def committed_boundary_points(
+    source_obj: bpy.types.Object,
+    exclude_face_id: int | None = None,
+    only_face_ids: Iterable[int] | None = None,
+) -> list[mathutils.Vector]:
     """Committed retopology vertices a side could be matched onto, in the
     source object's local space.
 
@@ -1270,7 +1355,11 @@ def committed_boundary_points(source_obj, exclude_face_id=None, only_face_ids=No
     return flatten_boundary_points(grouped, wanted, exclude_face_id)
 
 
-def flatten_boundary_points(grouped, face_ids, exclude_face_id=None):
+def flatten_boundary_points(
+    grouped: CommittedMap,
+    face_ids: Iterable[int],
+    exclude_face_id: int | None = None,
+) -> list[mathutils.Vector]:
     """The vertices of `face_ids` out of a `committed_boundary_map`, deduped.
 
     Deduped because a welded vertex is listed under every patch that owns it,
@@ -1290,7 +1379,11 @@ def flatten_boundary_points(grouped, face_ids, exclude_face_id=None):
     return points if len(points) >= 2 else []
 
 
-def match_side_to_points(pool, side_points, tolerance):
+def match_side_to_points(
+    pool: list[mathutils.Vector],
+    side_points: list[mathutils.Vector],
+    tolerance: float,
+) -> tuple[list[mathutils.Vector] | None, str]:
     """Which of `pool` lie along this side, in order, or (None, reason).
 
     `reason` says which check refused -- an opaque "nothing to match" on a side
@@ -1354,7 +1447,11 @@ CLOSED_SIDE_MAX_GAP = 0.25
 CLOSED_SIDE_GAP_RATIO = 3.0
 
 
-def _close_matched_ring(ordered, side_points, tolerance):
+def _close_matched_ring(
+    ordered: list[mathutils.Vector],
+    side_points: list[mathutils.Vector],
+    tolerance: float,
+) -> tuple[list[mathutils.Vector] | None, str]:
     """Turn matched points on a closed side into a closed polyline, or refuse.
 
     One thing has to hold: the neighbour must reach all the way round, checked
@@ -1394,7 +1491,12 @@ def _close_matched_ring(ordered, side_points, tolerance):
     return rotated, ""
 
 
-def side_match_tolerance(state, side_points, margin=False, reference_length=None):
+def side_match_tolerance(
+    state: state_mod.RetopPatchState,
+    side_points: list[mathutils.Vector],
+    margin: bool = False,
+    reference_length: float | None = None,
+) -> float:
     """How far off the boundary a committed vertex may sit and still count as
     being on it.
 
@@ -1435,7 +1537,7 @@ def side_match_tolerance(state, side_points, margin=False, reference_length=None
 # ID is created or freed, so this is safe to call outside an undo step.
 
 
-def local_view_spaces(context):
+def local_view_spaces(context: bpy.types.Context) -> list[bpy.types.SpaceView3D]:
     """Every 3D viewport currently in Local View, across all open windows."""
     spaces = []
     for window in context.window_manager.windows:
@@ -1451,7 +1553,7 @@ def local_view_spaces(context):
     return spaces
 
 
-def sync_local_view(context):
+def sync_local_view(context: bpy.types.Context) -> int:
     """Add the preview and the relevant result meshes to every viewport that is
     in Local View. Returns how many objects were added.
 

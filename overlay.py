@@ -12,6 +12,8 @@ would crash the next Ctrl+Z -- see the note in mesh_build. Everything expensive
 they show is computed and cached elsewhere for the same reason: a redraw is not
 a place to walk a mesh.
 """
+from typing import TYPE_CHECKING
+
 import blf
 import bpy
 import gpu
@@ -25,8 +27,15 @@ from . import constants
 from . import mesh_build
 from . import sidematch
 
-_handle = None
-_points_handle = None
+if TYPE_CHECKING:
+    # Annotations only: the overlay runs inside a draw handler and must never
+    # widen what it pulls in at import time.
+    import mathutils
+
+    from . import state as state_mod
+
+_handle: object | None = None
+_points_handle: object | None = None
 
 # --- N-gon vertex dots ---
 #
@@ -102,15 +111,17 @@ TWO_SPAN_GENERATOR_NAMES = constants.TWO_SPAN_GENERATORS
 
 # Set by the session modal while digits are being typed, so the overlay can
 # echo them back like Blender's own numeric input.
-typed_span = ""
+typed_span: str = ""
 
 # Set by the session modal when the patch under the cursor has already been
 # committed, so the hint reads "Re-edit patch" -- clicking it reopens it with
 # the spans it was built with instead of starting a fresh one.
-hover_committed = False
+hover_committed: bool = False
 
 
-def keybinds_for(state):
+def keybinds_for(
+    state: "state_mod.RetopPatchState",
+) -> list[list[tuple[str, str]]]:
     """[(key, action), ...] for the session's current phase, bottom line last."""
     phase = state.session_phase
     # Alt+X is offered in every phase: it is the binding that answers "is the
@@ -173,7 +184,7 @@ def keybinds_for(state):
     return binds
 
 
-def _set_font_size(font_id, size):
+def _set_font_size(font_id: int, size: float) -> None:
     # blf.size() dropped its dpi argument in Blender 4.0.
     try:
         blf.size(font_id, size)
@@ -181,7 +192,7 @@ def _set_font_size(font_id, size):
         blf.size(font_id, size, 72)
 
 
-def _draw_key_background(x, y, width, height):
+def _draw_key_background(x: float, y: float, width: float, height: float) -> None:
     vertices = (
         (x, y), (x + width, y),
         (x + width, y + height), (x, y + height),
@@ -197,7 +208,7 @@ def _draw_key_background(x, y, width, height):
     gpu.state.blend_set('NONE')
 
 
-def _draw():
+def _draw() -> None:
     context = bpy.context
     state = getattr(context.scene, "plasticity_retop", None)
     if state is None or not state.session_active:
@@ -276,7 +287,7 @@ def _draw():
         blf.draw(font_id, label)
 
 
-def _preview_vertex_coords():
+def _preview_vertex_coords() -> "list[mathutils.Vector] | None":
     """World-space vertices of the preview object, or None when there is
     nothing to draw. Read from the *base* mesh, like commit does: the Preview
     Offset is a Displace modifier, so evaluating it would put the dots where
@@ -289,7 +300,7 @@ def _preview_vertex_coords():
     return [matrix @ vertex.co for vertex in obj.data.vertices]
 
 
-def _draw_side_references(state):
+def _draw_side_references(state: "state_mod.RetopPatchState") -> None:
     """The active patch's sides while the side picker is on."""
     references = sidematch.active_sides()
     if not references:
@@ -321,7 +332,7 @@ def _draw_side_references(state):
     gpu.state.blend_set('NONE')
 
 
-def _draw_points():
+def _draw_points() -> None:
     """POST_VIEW: the side highlight, which is genuinely 3D geometry.
 
     The vertex dots are *not* here -- they are drawn in screen space by
@@ -344,7 +355,9 @@ def _draw_points():
         _draw_side_references(state)
 
 
-def _match_dot_sets(state):
+def _match_dot_sets(
+    state: "state_mod.RetopPatchState",
+) -> "list[tuple[list[mathutils.Vector], tuple[float, float, float, float]]]":
     """[(world points, colour)] the match overlay should draw right now.
 
     The hovered side shows what clicking it would take; a pinned side shows
@@ -374,7 +387,11 @@ def _match_dot_sets(state):
     return sets
 
 
-def _draw_match_points(context, state, region):
+def _draw_match_points(
+    context: bpy.types.Context,
+    state: "state_mod.RetopPatchState",
+    region: bpy.types.Region,
+) -> None:
     """Dots on the vertices the current matches land on."""
     if state.session_phase != 'ADJUST':
         return
@@ -412,7 +429,9 @@ def _draw_match_points(context, state, region):
     gpu.state.blend_set('NONE')
 
 
-def _cad_display_target(context, state):
+def _cad_display_target(
+    context: bpy.types.Context, state: "state_mod.RetopPatchState"
+) -> "tuple[bpy.types.Object | None, bpy.types.Mesh | None, int | None]":
     """(object, mesh, face id or None) the CAD overlay should describe.
 
     None for the face id means the whole object. A scope of ACTIVE with nothing
@@ -431,7 +450,11 @@ def _cad_display_target(context, state):
     return obj, obj.data, face_id
 
 
-def _draw_line_batch(points, color, width):
+def _draw_line_batch(
+    points: "list[mathutils.Vector]",
+    color: tuple[float, float, float, float],
+    width: float,
+) -> None:
     """One LINES batch for a whole list of point pairs.
 
     One batch, not one per edge: a CAD part has hundreds of edges, and a draw
@@ -448,7 +471,9 @@ def _draw_line_batch(points, color, width):
     batch_for_shader(shader, 'LINES', {"pos": points}).draw(shader)
 
 
-def _draw_cad_structure(context, state):
+def _draw_cad_structure(
+    context: bpy.types.Context, state: "state_mod.RetopPatchState"
+) -> None:
     """POST_VIEW: the Plasticity edges, and the flow of each CAD face."""
     want_edges = getattr(state, "show_cad_edges", False)
     want_flow = getattr(state, "show_surface_flow", False)
@@ -482,7 +507,11 @@ def _draw_cad_structure(context, state):
     gpu.state.blend_set('NONE')
 
 
-def _draw_brep_vertices(context, state, region):
+def _draw_brep_vertices(
+    context: bpy.types.Context,
+    state: "state_mod.RetopPatchState",
+    region: bpy.types.Region,
+) -> None:
     """The junctions between CAD edges, as screen-space dots.
 
     Tied to the edge display: a B-rep vertex is where two edges meet, and dots
@@ -522,7 +551,9 @@ def _draw_brep_vertices(context, state, region):
     gpu.state.blend_set('NONE')
 
 
-def _quads_around(centres, half):
+def _quads_around(
+    centres: "list[mathutils.Vector]", half: float
+) -> tuple[list[tuple[float, float]], list[tuple[int, int, int]]]:
     """Two triangles per centre, as (vertices, indices) for a TRIS batch."""
     vertices = []
     indices = []
@@ -537,7 +568,11 @@ def _quads_around(centres, half):
     return vertices, indices
 
 
-def _draw_vertex_dots(context, state, region):
+def _draw_vertex_dots(
+    context: bpy.types.Context,
+    state: "state_mod.RetopPatchState",
+    region: bpy.types.Region,
+) -> None:
     """A dot on every boundary vertex of the n-gon being adjusted."""
     if state.session_phase != 'ADJUST':
         return
@@ -579,7 +614,7 @@ def _draw_vertex_dots(context, state, region):
     gpu.state.blend_set('NONE')
 
 
-def enable():
+def enable() -> None:
     global _handle, _points_handle
     if _handle is None:
         _handle = bpy.types.SpaceView3D.draw_handler_add(
@@ -589,7 +624,7 @@ def enable():
             _draw_points, (), 'WINDOW', 'POST_VIEW')
 
 
-def disable():
+def disable() -> None:
     global _handle, _points_handle
     if _handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_handle, 'WINDOW')

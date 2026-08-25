@@ -28,10 +28,24 @@ overlay draws what a match would take, and a draw handler must never be able to
 reach the operators module.
 """
 import json
+from typing import TYPE_CHECKING
 
 from . import constants
 from . import generators
 from . import mesh_build
+
+if TYPE_CHECKING:
+    import bpy
+    import mathutils
+
+    from . import patchprep
+    from . import state as state_mod
+
+# A committed patch's boundary vertices, keyed by the face id owning them --
+# what `mesh_build.committed_boundary_map` hands back.
+CommittedMap = dict[int, "list[mathutils.Vector]"]
+# One winning match per span key: the side, the points it takes, whether pinned.
+Winners = dict[str, "tuple[SideReference, list[mathutils.Vector], bool]"]
 
 
 class SideReference:
@@ -46,9 +60,20 @@ class SideReference:
                  "neighbours", "reason", "strict_points", "source_points",
                  "match_world", "source_world")
 
-    def __init__(self, index, loop, in_loop, points, match_points, neighbours,
-                 reason="", strict_points=None, source_points=None,
-                 match_world=None, source_world=None):
+    def __init__(
+        self,
+        index: int,
+        loop: int,
+        in_loop: int,
+        points: "list[mathutils.Vector]",
+        match_points: "list[mathutils.Vector] | None",
+        neighbours: list[int] | None,
+        reason: str = "",
+        strict_points: "list[mathutils.Vector] | None" = None,
+        source_points: "list[mathutils.Vector] | None" = None,
+        match_world: "list[mathutils.Vector] | None" = None,
+        source_world: "list[mathutils.Vector] | None" = None,
+    ) -> None:
         # The same two point sets in world space, for the overlay to draw.
         # Kept here rather than transformed at draw time: a draw handler runs on
         # every redraw and has no business recomputing what generation knew.
@@ -82,21 +107,21 @@ class SideReference:
         self.neighbours = list(neighbours or [])
 
     @property
-    def neighbour(self):
+    def neighbour(self) -> int | None:
         """The face the picker names -- the one covering most of the side."""
         return self.neighbours[0] if self.neighbours else None
 
     @property
-    def available(self):
+    def available(self) -> bool:
         return self.match_points is not None
 
     @property
-    def span(self):
+    def span(self) -> int | None:
         """Segments the neighbour put along this side."""
         return len(self.match_points) - 1 if self.match_points else None
 
     @property
-    def source_span(self):
+    def source_span(self) -> int:
         """Segments the CAD tessellation puts along this side."""
         return max(1, len(self.source_points) - 1)
 
@@ -104,14 +129,19 @@ class SideReference:
 # Rebuilt every time a patch is generated, dropped by a reload. The overlay and
 # the modal both read it; nothing persists it, because it holds Vectors and
 # describes a preview that only exists while the session runs.
-_active_sides = []
+_active_sides: list[SideReference] = []
 
 
-def active_sides():
+def active_sides() -> list[SideReference]:
     return _active_sides
 
 
-def build_side_references(context, obj, prepared, face_id=None):
+def build_side_references(
+    context: "bpy.types.Context",
+    obj: "bpy.types.Object",
+    prepared: "patchprep.PreparedPatch",
+    face_id: int | None = None,
+) -> list[SideReference]:
     """The active patch's sides, with the geometry each of them could match.
 
     Walks every loop, so a ring or a holed n-gon offers its hole's sides too --
@@ -185,7 +215,9 @@ def build_side_references(context, obj, prepared, face_id=None):
     return references
 
 
-def _empty_pool_reason(neighbours, committed, active_face_id):
+def _empty_pool_reason(
+    neighbours: list[int], committed: CommittedMap, active_face_id: int | None
+) -> str:
     """Why a side had nothing to look at -- which is not the same as having
     looked and found nothing. "No neighbour" on a side that plainly runs
     against a finished patch is the refusal nobody can act on.
@@ -198,7 +230,9 @@ def _empty_pool_reason(neighbours, committed, active_face_id):
     return "none of this side's neighbours is retopologized yet"
 
 
-def _match_pool(committed, neighbours, active_face_id):
+def _match_pool(
+    committed: CommittedMap, neighbours: list[int], active_face_id: int | None
+) -> "list[mathutils.Vector]":
     """The committed vertices a side is allowed to match.
 
     Strictly the Plasticity faces across this side, plus any untracked
@@ -227,7 +261,7 @@ def _match_pool(committed, neighbours, active_face_id):
     return mesh_build.flatten_boundary_points(committed, wanted, active_face_id)
 
 
-def clear_side_references():
+def clear_side_references() -> None:
     global _active_sides
     _active_sides = []
 
@@ -240,7 +274,7 @@ PIN_SOURCE = "S"     # follow the CAD tessellation of this side itself
 PIN_KINDS = (PIN_NEIGHBOUR, PIN_SOURCE)
 
 
-def side_override_map(state):
+def side_override_map(state: "state_mod.RetopPatchState") -> dict[int, str]:
     """The manual per-side pins, as {flat index: PIN_*}."""
     if not state.side_overrides:
         return {}
@@ -260,11 +294,13 @@ def side_override_map(state):
     return pins
 
 
-def store_side_overrides(state, overrides):
+def store_side_overrides(
+    state: "state_mod.RetopPatchState", overrides: dict[int, str]
+) -> None:
     state.side_overrides = json.dumps({str(k): v for k, v in overrides.items()}) if overrides else ""
 
 
-def span_key_for(generator_name, reference):
+def span_key_for(generator_name: str, reference: SideReference) -> str:
     """Which span a match on this side drives.
 
     A grid has one count per *direction*, not per side: pinning a quad's bottom
@@ -282,7 +318,9 @@ def span_key_for(generator_name, reference):
     return "span"
 
 
-def _match_candidates(state, references):
+def _match_candidates(
+    state: "state_mod.RetopPatchState", references: list[SideReference]
+) -> "list[tuple[SideReference, list[mathutils.Vector], bool]]":
     """Every side that wants to be matched, with the points it would take.
 
     A pin uses the picker's generous margin -- pointing at a side is saying
@@ -309,7 +347,10 @@ def _match_candidates(state, references):
     return candidates
 
 
-def _winning_matches(candidates, generator_name):
+def _winning_matches(
+    candidates: "list[tuple[SideReference, list[mathutils.Vector], bool]]",
+    generator_name: str,
+) -> tuple[Winners, list[SideReference]]:
     """One match per span, since a grid cannot honour two counts in one
     direction.
 
@@ -339,7 +380,9 @@ def _winning_matches(candidates, generator_name):
             losers)
 
 
-def collect_side_matches(context, generator_name):
+def collect_side_matches(
+    context: "bpy.types.Context", generator_name: str
+) -> tuple[Winners, list[SideReference]]:
     """({span key: (side, points, pinned)}, [sides that lost a collision]).
 
     Everything the caller needs to decide spans *before* any side is rewritten:
@@ -351,7 +394,9 @@ def collect_side_matches(context, generator_name):
         _match_candidates(state, active_sides()), generator_name)
 
 
-def _honours(key, points, spans):
+def _honours(
+    key: str, points: "list[mathutils.Vector]", spans: dict[str, int] | None
+) -> bool:
     """Whether the resolved spans still let this match reproduce its points.
 
     A substituted side only comes back vertex for vertex if the generator asks
@@ -367,7 +412,14 @@ def _honours(key, points, spans):
     return spans.get(key) == len(points) - 1
 
 
-def apply_side_matches(context, obj, prepared, generator_name, spans=None, winners=None):
+def apply_side_matches(
+    context: "bpy.types.Context",
+    obj: "bpy.types.Object",
+    prepared: "patchprep.PreparedPatch",
+    generator_name: str,
+    spans: dict[str, int] | None = None,
+    winners: Winners | None = None,
+) -> tuple[dict[int, int], list[int]]:
     """Replace each matched side's polyline with the vertices it must reproduce.
 
     Nothing downstream needs to know: every generator resamples a side with
@@ -412,7 +464,9 @@ def apply_side_matches(context, obj, prepared, generator_name, spans=None, winne
     return counts, [reference.index for reference in losers]
 
 
-def ngon_side_segments(prepared, matched_counts):
+def ngon_side_segments(
+    prepared: "patchprep.PreparedPatch", matched_counts: dict[int, int]
+) -> list[dict[int, int]]:
     """The matched counts, regrouped per loop the way the n-gon wants them."""
     per_loop = []
     index = 0

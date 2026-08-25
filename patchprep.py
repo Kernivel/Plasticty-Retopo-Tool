@@ -11,12 +11,19 @@ preview object. It reads a mesh and returns a value, which is also what makes
 it the part worth testing directly.
 """
 import math
+from typing import TYPE_CHECKING
 
 import mathutils
 
 from . import generators
 from . import patch_data
 from . import sides as sides_mod
+
+if TYPE_CHECKING:
+    import bpy
+
+# One boundary loop's sides, already resolved to points.
+LoopSides = list[list[mathutils.Vector]]
 
 
 class PreparedPatch:
@@ -31,8 +38,15 @@ class PreparedPatch:
     __slots__ = ("patch", "loops_sides", "loops_corner_ids", "num_loops",
                  "loops_neighbours", "corner_warning")
 
-    def __init__(self, patch, loops_sides, loops_corner_ids, num_loops,
-                 loops_neighbours=None, corner_warning=""):
+    def __init__(
+        self,
+        patch: patch_data.Patch,
+        loops_sides: list[LoopSides],
+        loops_corner_ids: list[list[int]],
+        num_loops: int,
+        loops_neighbours: list[list[list[int]]] | None = None,
+        corner_warning: str = "",
+    ) -> None:
         # Why this patch's side count should not be trusted, or "". Set when
         # the angle test flagged *every* boundary vertex, which means the
         # threshold is doing nothing useful here -- see sides.corners_are_uniform.
@@ -47,23 +61,28 @@ class PreparedPatch:
         self.loops_neighbours = loops_neighbours or []
 
     @property
-    def is_ring(self):
+    def is_ring(self) -> bool:
         return len(self.loops_sides) == 2
 
     @property
-    def sides(self):
+    def sides(self) -> LoopSides:
         """Sides of the outer loop -- what the single-loop generators take."""
         return self.loops_sides[0]
 
     @property
-    def corner_source_ids(self):
+    def corner_source_ids(self) -> list[int]:
         """Every corner, outer loop first, matching the order generators fill
         GenerationResult.corner_local_indices in."""
         return [vid for loop_ids in self.loops_corner_ids for vid in loop_ids]
 
 
-def prepare_patch(mesh, face_id, angle_threshold, small_side_tolerance,
-                   corner_method='BOTH'):
+def prepare_patch(
+    mesh: "bpy.types.Mesh",
+    face_id: int,
+    angle_threshold: float,
+    small_side_tolerance: float,
+    corner_method: str = 'BOTH',
+) -> PreparedPatch | None:
     """Split patch `face_id`'s boundary into sides. Returns a PreparedPatch, or
     None if the patch has no usable boundary.
     """
@@ -118,7 +137,11 @@ def prepare_patch(mesh, face_id, angle_threshold, small_side_tolerance,
                          loops_neighbours, corner_warning)
 
 
-def side_neighbours(loop, side_indices, segment_neighbours):
+def side_neighbours(
+    loop: patch_data.Loop,
+    side_indices: list[sides_mod.Side],
+    segment_neighbours: patch_data.Neighbours | None,
+) -> list[list[int]]:
     """The Plasticity faces on the other side of each side, most-covering first.
 
     A side spans several boundary segments, and they don't have to agree: only
@@ -160,7 +183,9 @@ def side_neighbours(loop, side_indices, segment_neighbours):
     return result
 
 
-def patch_is_planar(mesh, face_id, tolerance_degrees):
+def patch_is_planar(
+    mesh: "bpy.types.Mesh", face_id: int, tolerance_degrees: float
+) -> bool:
     """True when every polygon of the patch faces (nearly) the same way.
 
     Deliberately cheap -- polygon normals only, no boundary walk or KD-tree --

@@ -25,26 +25,35 @@ here: they show the topology the retopology would actually get.
 Everything is cached per mesh, keyed on the same fingerprint `patch_data` uses.
 A draw handler runs on every redraw, and none of this may be recomputed there.
 """
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypeVar
+
 from . import generators
 from . import geometry
 from . import patch_data
 from . import sides as sides_mod
 
+if TYPE_CHECKING:
+    import bpy
+    import mathutils
+    from mathutils.bvhtree import BVHTree
+
+_T = TypeVar("_T")
 
 # mesh name -> {key: (fingerprint, value)}. Each mesh keeps one entry per
 # derived product, since they are asked for independently and cost differently.
-_cache = {}
+_cache: dict[str, dict[str, tuple[patch_data.Fingerprint, Any]]] = {}
 _CACHE_LIMIT = 4
 
 
-def invalidate(mesh=None):
+def invalidate(mesh: "bpy.types.Mesh | None" = None) -> None:
     if mesh is None:
         _cache.clear()
     else:
         _cache.pop(mesh.name, None)
 
 
-def _cached(mesh, key, build):
+def _cached(mesh: "bpy.types.Mesh", key: str, build: Callable[[], _T]) -> _T:
     fingerprint = patch_data.mesh_fingerprint(mesh)
     entries = _cache.get(mesh.name)
     if entries is None:
@@ -64,7 +73,9 @@ def _cached(mesh, key, build):
 # --- B-rep edges and vertices ----------------------------------------------
 
 
-def _edge_runs(loop, neighbours):
+def _edge_runs(
+    loop: patch_data.Loop, neighbours: patch_data.Neighbours
+) -> list[list[int]]:
     """Split one boundary loop into runs of constant neighbour.
 
     Each run is a list of positions *into the loop*, from one junction up to
@@ -95,7 +106,9 @@ def _edge_runs(loop, neighbours):
     return runs
 
 
-def edge_polylines(mesh, face_id=None):
+def edge_polylines(
+    mesh: "bpy.types.Mesh", face_id: int | None = None
+) -> "list[list[mathutils.Vector]]":
     """Every B-rep edge of `mesh`, as a list of point polylines in local space.
 
     Each edge is emitted **once**, though both of the faces that share it walk
@@ -106,7 +119,7 @@ def edge_polylines(mesh, face_id=None):
     welded vertex indices, but a set of those is a much larger thing to carry
     around than one comparison.
     """
-    def build():
+    def build() -> list[list["mathutils.Vector"]]:
         analysis = patch_data.analyse(mesh)
         # Boundary loops are in welded index space, and a welded id is itself a
         # vertex index -- build_weld_map elects one of the coincident vertices
@@ -129,13 +142,15 @@ def edge_polylines(mesh, face_id=None):
     return _cached(mesh, f"edges:{face_id}", build)
 
 
-def edge_segments(mesh, face_id=None):
+def edge_segments(
+    mesh: "bpy.types.Mesh", face_id: int | None = None
+) -> "list[mathutils.Vector]":
     """The same edges as a flat list of point pairs, ready for a LINES batch.
 
     One batch for the whole object rather than one per edge: a CAD part has
     hundreds of edges, and a draw call each is what makes an overlay stutter.
     """
-    def build():
+    def build() -> list["mathutils.Vector"]:
         segments = []
         for polyline in edge_polylines(mesh, face_id):
             for a, b in zip(polyline, polyline[1:]):
@@ -146,14 +161,16 @@ def edge_segments(mesh, face_id=None):
     return _cached(mesh, f"edge_segments:{face_id}", build)
 
 
-def brep_vertices(mesh, face_id=None):
+def brep_vertices(
+    mesh: "bpy.types.Mesh", face_id: int | None = None
+) -> "list[mathutils.Vector]":
     """The junctions between CAD edges -- genuine B-rep vertices.
 
     Where the face on the other side of the boundary changes, two CAD edges
     meet, and the vertex there is one the model itself put down. Every other
     boundary vertex is the mesher's.
     """
-    def build():
+    def build() -> list["mathutils.Vector"]:
         analysis = patch_data.analyse(mesh)
         positions = analysis.positions
         seen = set()
@@ -179,7 +196,13 @@ def brep_vertices(mesh, face_id=None):
 MAX_FLOW_SPAN = 12
 
 
-def _patch_flow(patch, positions, density, bvh, angle_threshold):
+def _patch_flow(
+    patch: patch_data.Patch,
+    positions: patch_data.Positions,
+    density: int,
+    bvh: "BVHTree | None",
+    angle_threshold: float,
+) -> "tuple[list[mathutils.Vector], list[tuple[int, int]]]":
     """The flow grid of one patch, as (a, b) index pairs into a point list."""
     if not patch.boundary_loops:
         return [], []
@@ -237,14 +260,19 @@ def _patch_flow(patch, positions, density, bvh, angle_threshold):
     return result.verts, sorted(edges)
 
 
-def flow_segments(mesh, density=2, angle_threshold=135.0, face_id=None):
+def flow_segments(
+    mesh: "bpy.types.Mesh",
+    density: int = 2,
+    angle_threshold: float = 135.0,
+    face_id: int | None = None,
+) -> "list[mathutils.Vector]":
     """Flow lines for every patch of `mesh`, as a flat list of point pairs.
 
     Built from the same generators the retopology uses, at a low span, and
     reprojected onto the surface through one shared BVH -- so what is drawn is
     the shape a patch would actually be filled with, not a flat lid over it.
     """
-    def build():
+    def build() -> list["mathutils.Vector"]:
         analysis = patch_data.analyse(mesh)
         positions = analysis.positions
         bvh, _tri_poly = geometry.build_bvh_with_polygon_map(mesh)
@@ -263,11 +291,13 @@ def flow_segments(mesh, density=2, angle_threshold=135.0, face_id=None):
     return _cached(mesh, f"flow:{density}:{angle_threshold}:{face_id}", build)
 
 
-def patch_count(mesh):
+def patch_count(mesh: "bpy.types.Mesh") -> int:
     """How many CAD faces the mesh declares -- for the panel to size the cost."""
     return len(patch_data.analyse(mesh).patches)
 
 
-def world_segments(matrix, points):
+def world_segments(
+    matrix: "mathutils.Matrix", points: "list[mathutils.Vector]"
+) -> "list[mathutils.Vector]":
     """Local-space points through an object matrix, for a GPU batch."""
     return [matrix @ point for point in points]

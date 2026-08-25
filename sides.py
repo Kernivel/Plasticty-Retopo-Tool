@@ -22,9 +22,24 @@ Two ways to find corners, because neither alone is right:
 So the default is the union of both. `state.corner_method` switches.
 """
 import math
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Annotations only -- this module stays free of Blender imports so it can
+    # be exercised on plain point tables.
+    import mathutils
+
+# A closed boundary loop, as vertex indices, plus the table those index into.
+Loop = list[int]
+Positions = dict[int, "mathutils.Vector"]
+# A side is the run of vertex indices from one corner up to and including the
+# next; consecutive sides share their corner.
+Side = list[int]
 
 
-def _angle_at(prev_co, co, next_co):
+def _angle_at(
+    prev_co: "mathutils.Vector", co: "mathutils.Vector", next_co: "mathutils.Vector"
+) -> float:
     """Interior turning angle (degrees) of the boundary polyline at `co`.
 
     180 degrees means dead straight, smaller values mean a sharper corner.
@@ -40,7 +55,9 @@ def _angle_at(prev_co, co, next_co):
     return 180.0 - deviation
 
 
-def detect_corners(loop, positions, angle_threshold=135.0):
+def detect_corners(
+    loop: Loop, positions: Positions, angle_threshold: float = 135.0
+) -> list[int]:
     """Return the indices (into `loop`) of the vertices considered corners.
 
     `positions` maps vertex index -> mathutils.Vector (world/object space).
@@ -59,7 +76,9 @@ def detect_corners(loop, positions, angle_threshold=135.0):
     return corners
 
 
-def detect_topological_corners(loop, neighbour_ids):
+def detect_topological_corners(
+    loop: Loop, neighbour_ids: list[int | None] | None
+) -> list[int]:
     """Indices (into `loop`) where the patch on the other side changes.
 
     `neighbour_ids[i]` is the face across segment loop[i] -> loop[i+1], so the
@@ -73,7 +92,7 @@ def detect_topological_corners(loop, neighbour_ids):
             if neighbour_ids[(i - 1) % count] != neighbour_ids[i]]
 
 
-def deviations(loop, positions):
+def deviations(loop: Loop, positions: Positions) -> list[float]:
     """How far the boundary bends at each vertex, in degrees.
 
     0 is dead straight, 90 is a square corner. The complement of `_angle_at`,
@@ -105,7 +124,12 @@ CORNER_CLIFF_TO_TRIANGLE = 2.5
 MIN_DOMINANT_CORNERS = 3
 
 
-def dominant_corners(loop, positions, corners, protected=()):
+def dominant_corners(
+    loop: Loop,
+    positions: Positions,
+    corners: list[int],
+    protected: "set[int] | tuple[int, ...]" = (),
+) -> list[int]:
     """Drop the corners that are only noise, when the patch has too many.
 
     A face comes back with more than four sides for two very different
@@ -174,7 +198,7 @@ def dominant_corners(loop, positions, corners, protected=()):
 UNIFORM_TURN_SPREAD = 1.6
 
 
-def corners_are_uniform(loop, positions, corners):
+def corners_are_uniform(loop: Loop, positions: Positions, corners: list[int]) -> bool:
     """True when the flagged corners are indistinguishable from the rest of the
     boundary -- every vertex bending about the same amount.
 
@@ -217,7 +241,9 @@ SHAPE_CONTRAST = 1.35
 SHAPE_SEPARATION = 0.12
 
 
-def _cumulative_lengths(loop, positions):
+def _cumulative_lengths(
+    loop: Loop, positions: Positions
+) -> tuple[list[float], float]:
     """Arc length at each vertex, plus the total, walking the closed loop."""
     n = len(loop)
     cumulative = [0.0]
@@ -227,7 +253,9 @@ def _cumulative_lengths(loop, positions):
     return cumulative, cumulative[-1]
 
 
-def _index_at_offset(cumulative, total, index, offset):
+def _index_at_offset(
+    cumulative: list[float], total: float, index: int, offset: float
+) -> int:
     """The vertex roughly `offset` of arc length away from `index`."""
     n = len(cumulative) - 1
     target = (cumulative[index] + offset) % total
@@ -235,7 +263,7 @@ def _index_at_offset(cumulative, total, index, offset):
                                            total - abs(cumulative[i] - target)))
 
 
-def shape_turns(loop, positions):
+def shape_turns(loop: Loop, positions: Positions) -> list[float]:
     """How much the boundary turns at each vertex, measured over SHAPE_WINDOW.
 
     Not the turn *at* the vertex: on a tessellated boundary that is dominated
@@ -258,7 +286,7 @@ def shape_turns(loop, positions):
     return turns
 
 
-def shape_corners(loop, positions):
+def shape_corners(loop: Loop, positions: Positions) -> list[int]:
     """Corners recovered from the boundary's *shape*, or [] if it has none.
 
     A cornerless loop is not the same as a featureless one. A long strip that
@@ -286,7 +314,7 @@ def shape_corners(loop, positions):
     cumulative, total = _cumulative_lengths(loop, positions)
     separation = total * SHAPE_SEPARATION
 
-    def far_enough(candidate, chosen):
+    def far_enough(candidate: int, chosen: list[int]) -> bool:
         for other in chosen:
             gap = abs(cumulative[candidate] - cumulative[other])
             if min(gap, total - gap) < separation:
@@ -295,7 +323,7 @@ def shape_corners(loop, positions):
 
     window = total * SHAPE_WINDOW
 
-    def is_local_max(index):
+    def is_local_max(index: int) -> bool:
         """A feature is where the turn *peaks*, not merely where it is high.
 
         Without this the tangency between a strip's straight side and its cap
@@ -335,7 +363,9 @@ def shape_corners(loop, positions):
     return sorted(chosen) if len(chosen) >= 2 else []
 
 
-def synthesise_corners(loop, positions, count=FALLBACK_CORNER_COUNT):
+def synthesise_corners(
+    loop: Loop, positions: Positions, count: int = FALLBACK_CORNER_COUNT
+) -> list[int]:
     """Corners for a boundary that has none to detect.
 
     The shape is asked first (`shape_corners`): a strip, a slot, a rounded
@@ -366,7 +396,12 @@ def synthesise_corners(loop, positions, count=FALLBACK_CORNER_COUNT):
     return sorted(corners)
 
 
-def complete_corners(loop, positions, corners, count=FALLBACK_CORNER_COUNT):
+def complete_corners(
+    loop: Loop,
+    positions: Positions,
+    corners: list[int],
+    count: int = FALLBACK_CORNER_COUNT,
+) -> list[int]:
     """Add corners until the loop has enough of them to be split into sides.
 
     One corner is no better than none: `split_into_sides` returns a single side
@@ -401,8 +436,14 @@ def complete_corners(loop, positions, corners, count=FALLBACK_CORNER_COUNT):
     return sorted(chosen)
 
 
-def resolve_corners(loop, positions, angle_threshold=135.0, neighbour_ids=None,
-                    method='BOTH', allow_synthesis=True):
+def resolve_corners(
+    loop: Loop,
+    positions: Positions,
+    angle_threshold: float = 135.0,
+    neighbour_ids: list[int | None] | None = None,
+    method: str = 'BOTH',
+    allow_synthesis: bool = True,
+) -> list[int]:
     """Corner indices for `loop` under the chosen method.
 
     'TOPOLOGY' falls back to the angle test when the boundary has no junction
@@ -439,7 +480,9 @@ def resolve_corners(loop, positions, angle_threshold=135.0, neighbour_ids=None,
     return _fill_out(loop, positions, corners, allow_synthesis)
 
 
-def _fill_out(loop, positions, corners, allow_synthesis):
+def _fill_out(
+    loop: Loop, positions: Positions, corners: list[int], allow_synthesis: bool
+) -> list[int]:
     """Corners as resolved, topped up to a usable count when allowed.
 
     Fewer than two corners means fewer than two sides, and no generator takes
@@ -457,7 +500,12 @@ def _fill_out(loop, positions, corners, allow_synthesis):
     return synthesise_corners(loop, positions)
 
 
-def split_into_sides(loop, positions, angle_threshold=135.0, corner_indices=None):
+def split_into_sides(
+    loop: Loop,
+    positions: Positions,
+    angle_threshold: float = 135.0,
+    corner_indices: list[int] | None = None,
+) -> list[Side]:
     """Split a closed boundary loop into sides at corner vertices.
 
     Returns a list of sides; each side is a list of vertex indices from one
@@ -500,7 +548,9 @@ def split_into_sides(loop, positions, angle_threshold=135.0, corner_indices=None
     return sides
 
 
-def merge_small_sides(index_sides, positions, tolerance):
+def merge_small_sides(
+    index_sides: list[Side], positions: Positions, tolerance: float
+) -> list[Side]:
     """Merge boundary sides shorter than `tolerance` into their next
     neighbor, repeatedly, until none remain below the threshold (or only a
     minimal 3-sided patch is left). Operates on vertex-index sides, as
@@ -511,7 +561,7 @@ def merge_small_sides(index_sides, positions, tolerance):
 
     sides = [list(s) for s in index_sides]
 
-    def length(s):
+    def length(s: Side) -> float:
         return sum((positions[b] - positions[a]).length for a, b in zip(s, s[1:]))
 
     while len(sides) > 3:

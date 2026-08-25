@@ -1,29 +1,44 @@
+from typing import Any
+
 import bpy
 
+# NOTE: no `from __future__ import annotations` here, nor in any other module
+# that registers a Blender class. Every property below is declared *as an
+# annotation* with nothing after an `=`, so PEP 563 stringifies the very thing
+# Blender reads to register it. Blender 5.0 resolves those strings back, but
+# bl_info says 4.2 and the failure mode is silent -- the group registers
+# nothing and the panel simply draws empty. See tests/test_registration.py.
 
-def _live_update(self, context):
+
+def _live_update(self: "RetopPatchState", context: bpy.types.Context) -> None:
     # Lazy import: operators.py isn't guaranteed to be loaded yet when this
     # module's properties are first registered (see __init__.py import order).
     from . import operators
     operators.regenerate_active_preview(context)
 
 
-def _appearance_update(self, context):
+def _appearance_update(self: "RetopPatchState", context: bpy.types.Context) -> None:
     from . import mesh_build
     mesh_build.refresh_preview_appearance(context)
 
 
-def _result_appearance_update(self, context):
+def _result_appearance_update(
+    self: "RetopPatchState", context: bpy.types.Context
+) -> None:
     from . import mesh_build
     mesh_build.refresh_result_appearance(context)
 
 
-def _result_shading_update(self, context):
+def _result_shading_update(
+    self: "RetopPatchState", context: bpy.types.Context
+) -> None:
     from . import mesh_build
     mesh_build.refresh_result_shading(context)
 
 
-def _wire_opacity_update(self, context):
+def _wire_opacity_update(
+    self: "RetopPatchState", context: bpy.types.Context
+) -> None:
     from . import mesh_build
     mesh_build.apply_wireframe_opacity(context)
 
@@ -480,7 +495,7 @@ class RetopPatchState(bpy.types.PropertyGroup):
 # board: what the generators compute from edge lengths reads about a quarter
 # too dense in practice, and every preset was inheriting that.
 RESOLUTION_TRIM = 0.75
-RESOLUTION_FACTORS = {
+RESOLUTION_FACTORS: dict[str, float] = {
     'VERY_LOW': 0.25 * RESOLUTION_TRIM,
     'LOW': 0.5 * RESOLUTION_TRIM,
     'MID': 1.0 * RESOLUTION_TRIM,
@@ -489,7 +504,9 @@ RESOLUTION_FACTORS = {
 }
 
 
-def scale_default_spans(state, defaults):
+def scale_default_spans(
+    state: RetopPatchState, defaults: dict[str, Any]
+) -> dict[str, Any]:
     """Apply the Resolution preset to a generator's computed spans.
 
     Only ever the *computed* defaults: propagation from a committed neighbour
@@ -506,7 +523,7 @@ def scale_default_spans(state, defaults):
 
 # Blender's own length unit is 1 metre, so these convert a value typed in the
 # chosen unit into Blender units.
-UNIT_TO_BLENDER = {
+UNIT_TO_BLENDER: dict[str, float] = {
     'MM': 0.001,
     'CM': 0.01,
     'M': 1.0,
@@ -515,7 +532,7 @@ UNIT_TO_BLENDER = {
 }
 
 
-def to_blender_units(state, value):
+def to_blender_units(state: RetopPatchState, value: float) -> float:
     """Convert `value`, typed in state.length_unit, into Blender units."""
     return value * UNIT_TO_BLENDER.get(state.length_unit, 1.0)
 
@@ -523,13 +540,13 @@ def to_blender_units(state, value):
 CLASSES = (RetopPatchState,)
 
 
-def register():
+def register() -> None:
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Scene.plasticity_retop = bpy.props.PointerProperty(type=RetopPatchState)
 
 
-def unregister():
+def unregister() -> None:
     del bpy.types.Scene.plasticity_retop
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

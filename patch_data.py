@@ -20,25 +20,41 @@ by a fingerprint of the mesh's own contents and reused until that changes.
 """
 import array
 import zlib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    # Annotations only: this module is pure mesh parsing and pulls the heavy
+    # Blender types in lazily, where it needs them at all.
+    import bpy
+    import mathutils
 
 NO_NEIGHBOUR = None  # a boundary half-edge with no polygon on the other side
+
+# A boundary loop is an ordered list of (welded) vertex indices; the face id
+# across each of its segments is None where the patch borders nothing.
+Loop = list[int]
+Neighbours = list[int | None]
+# vertex index -> position in the mesh's local space
+Positions = dict[int, "mathutils.Vector"]
+# What `mesh_fingerprint` returns -- compared, never inspected.
+Fingerprint = tuple[int, int, int, int, int]
 
 
 @dataclass
 class Patch:
     face_id: int
-    poly_indices: list  # polygon indices belonging to this patch
+    poly_indices: list[int]  # polygon indices belonging to this patch
     # each boundary loop is an ordered list of vertex indices (loop[i] -> loop[i+1] is a boundary edge)
-    boundary_loops: list = field(default_factory=list)
+    boundary_loops: list[Loop] = field(default_factory=list)
     # per loop, the face id on the other side of each boundary segment:
-    # boundary_neighbours[k][i] faces segment loop[i] -> loop[(i+1) % n].
+    # boundary_neighbours[k][i] faces segment loop[i] -> loop[(i + 1) % n].
     # NO_NEIGHBOUR where the patch borders nothing (an open solid).
-    boundary_neighbours: list = field(default_factory=list)
+    boundary_neighbours: list[Neighbours] = field(default_factory=list)
 
 
-def polygon_face_ids(mesh):
+def polygon_face_ids(mesh: "bpy.types.Mesh") -> tuple[list[int], list[int]]:
     """Return a list mapping polygon index -> face_id, using mesh['groups']/['face_ids'].
 
     Mirrors the group-walking logic used by the bridge itself when it writes
@@ -70,7 +86,9 @@ def polygon_face_ids(mesh):
     return result, list(face_ids)
 
 
-def build_patches(mesh):
+def build_patches(
+    mesh: "bpy.types.Mesh",
+) -> tuple[dict[int, Patch], list[int], list[int]]:
     """Return ({face_id: Patch} with poly_indices filled in and boundary_loops
     still empty, polygon->face-id map, every declared face id).
     """
@@ -88,11 +106,11 @@ def build_patches(mesh):
     return patches, face_id_of_poly, face_ids
 
 
-def _edge_key(a, b):
+def _edge_key(a: int, b: int) -> tuple[int, int]:
     return (a, b) if a < b else (b, a)
 
 
-def weld_candidates(mesh):
+def weld_candidates(mesh: "bpy.types.Mesh") -> Sequence[int] | None:
     """The vertices a weld could possibly need to merge: those lying on an
     edge that Blender's own connectivity leaves unshared (fewer than two
     polygons on it). Returned as a sorted index array.
@@ -151,7 +169,7 @@ def weld_candidates(mesh):
     return np.flatnonzero(on_free_edge)
 
 
-def build_weld_map(mesh, epsilon=1e-5):
+def build_weld_map(mesh: "bpy.types.Mesh", epsilon: float = 1e-5) -> list[int]:
     """Return a list mapping raw vertex index -> canonical "welded" vertex
     index, merging vertices within `epsilon` of each other.
 
@@ -203,7 +221,11 @@ def build_weld_map(mesh, epsilon=1e-5):
     return weld_id
 
 
-def build_directed_owners(mesh, face_id_of_poly, weld_map=None):
+def build_directed_owners(
+    mesh: "bpy.types.Mesh",
+    face_id_of_poly: list[int],
+    weld_map: Sequence[int] | None = None,
+) -> dict[tuple[int, int], int]:
     """(a, b) -> face id of the polygon that traverses that directed edge.
 
     This is the closest thing to edge identity the bridge makes available. The
@@ -231,7 +253,9 @@ def build_directed_owners(mesh, face_id_of_poly, weld_map=None):
     return owners
 
 
-def boundary_neighbours_for_loop(loop, face_id, directed_owners):
+def boundary_neighbours_for_loop(
+    loop: Loop, face_id: int, directed_owners: dict[tuple[int, int], int]
+) -> Neighbours:
     """The face id across each segment of `loop`, segment i being
     loop[i] -> loop[(i + 1) % n]. `face_id` is the patch's own id, used to
     reject a match with itself (which a pinched boundary can produce).
@@ -247,8 +271,13 @@ def boundary_neighbours_for_loop(loop, face_id, directed_owners):
     return neighbours
 
 
-def compute_boundary_loops(mesh, patch, face_id_of_poly, weld_map=None,
-                           directed_owners=None):
+def compute_boundary_loops(
+    mesh: "bpy.types.Mesh",
+    patch: Patch,
+    face_id_of_poly: list[int],
+    weld_map: Sequence[int] | None = None,
+    directed_owners: dict[tuple[int, int], int] | None = None,
+) -> list[Loop]:
     """Fill patch.boundary_loops from patch.poly_indices.
 
     A boundary edge of the patch is an edge used by exactly one polygon of the
@@ -316,7 +345,7 @@ def compute_boundary_loops(mesh, patch, face_id_of_poly, weld_map=None,
     return loops
 
 
-def loop_extent(loop, positions):
+def loop_extent(loop: Loop, positions: Positions) -> float:
     """Bounding-box diagonal of a boundary loop, in the mesh's own units."""
     if not loop:
         return 0.0
@@ -326,7 +355,7 @@ def loop_extent(loop, positions):
     return sum((hi[axis] - lo[axis]) ** 2 for axis in range(3)) ** 0.5
 
 
-def sort_loops_outer_first(loops, positions):
+def sort_loops_outer_first(loops: list[Loop], positions: Positions) -> list[Loop]:
     """Order a patch's boundary loops with the outer one first.
 
     compute_boundary_loops walks a *set* of half-edges, so the order it returns
@@ -347,15 +376,16 @@ class MeshPatches:
     edit. `positions` in particular is shared, which is why
     `generators.base.resolve_side_points` copies each point it hands on.
     """
-    patches: dict          # face_id -> Patch, boundary loops already computed
-    face_id_of_poly: list  # polygon index -> face id
-    face_ids: list         # every face id the mesh declares, in group order
-    weld_map: list         # raw vertex index -> canonical welded index
-    directed_owners: dict  # (a, b) -> face id traversing that directed edge
-    positions: dict        # vertex index -> Vector (mesh local space)
+    patches: dict[int, Patch]      # face_id -> Patch, boundary loops computed
+    face_id_of_poly: list[int]     # polygon index -> face id
+    face_ids: list[int]            # every face id the mesh declares, in group order
+    weld_map: list[int]            # raw vertex index -> canonical welded index
+    # (a, b) -> face id traversing that directed edge
+    directed_owners: dict[tuple[int, int], int]
+    positions: Positions           # vertex index -> mesh local space
 
 
-def mesh_fingerprint(mesh):
+def mesh_fingerprint(mesh: "bpy.types.Mesh") -> Fingerprint:
     """A cheap value that changes whenever the mesh's geometry does.
 
     Counts alone are not enough: the bridge re-imports into the *same*
@@ -376,11 +406,11 @@ def mesh_fingerprint(mesh):
 # mesh name -> (fingerprint, MeshPatches). Keyed by name rather than by the
 # datablock so a dead mesh can never keep itself alive through this dict; a
 # stale entry under a reused name is caught by the fingerprint anyway.
-_cache = {}
+_cache: dict[str, tuple[Fingerprint, "MeshPatches"]] = {}
 _CACHE_LIMIT = 8  # a session works on one object; a few neighbours is plenty
 
 
-def invalidate(mesh=None):
+def invalidate(mesh: "bpy.types.Mesh | None" = None) -> None:
     """Drop the cached parse of `mesh`, or of everything when given nothing.
 
     Only needed when a mesh changes in a way the fingerprint cannot see -- it
@@ -393,7 +423,7 @@ def invalidate(mesh=None):
         _cache.pop(mesh.name, None)
 
 
-def analyse(mesh, weld_epsilon=1e-5):
+def analyse(mesh: "bpy.types.Mesh", weld_epsilon: float = 1e-5) -> MeshPatches:
     """The full parse of `mesh`, from cache when the mesh has not changed.
 
     This is the entry point everything else should use: patches, their boundary
@@ -427,7 +457,9 @@ def analyse(mesh, weld_epsilon=1e-5):
     return analysis
 
 
-def get_patches_with_boundaries(mesh, weld_epsilon=1e-5):
+def get_patches_with_boundaries(
+    mesh: "bpy.types.Mesh", weld_epsilon: float = 1e-5
+) -> dict[int, Patch]:
     """{face_id: Patch} with boundary loops computed. Thin wrapper over
     `analyse` for callers that only want the patches.
     """

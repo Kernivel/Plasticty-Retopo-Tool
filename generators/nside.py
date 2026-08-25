@@ -1,8 +1,13 @@
+from typing import TYPE_CHECKING, Any
+
 import mathutils
 
 from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
+
+if TYPE_CHECKING:
+    from mathutils.bvhtree import BVHTree
 
 
 class NSideGenerator(Generator):
@@ -21,10 +26,10 @@ class NSideGenerator(Generator):
 
     name = constants.NSIDE
 
-    def matches(self, num_sides):
+    def matches(self, num_sides: int) -> bool:
         return num_sides >= 5
 
-    def default_spans(self, sides):
+    def default_spans(self, sides: list[list[mathutils.Vector]]) -> dict[str, int]:
         seg_lengths = []
         side_lengths = []
         for side in sides:
@@ -40,7 +45,12 @@ class NSideGenerator(Generator):
         span = max(1, round(avg_side / max(target_edge, 1e-6)))
         return {"span": span}
 
-    def generate(self, sides, span_settings, bvh=None):
+    def generate(
+        self,
+        sides: list[list[mathutils.Vector]],
+        span_settings: dict[str, Any],
+        bvh: "BVHTree | None" = None,
+    ) -> GenerationResult:
         if len(sides) < 3:
             raise ValueError("NSideGenerator expects at least 3 sides")
 
@@ -64,7 +74,7 @@ class NSideGenerator(Generator):
             centre += p
         centre /= n
 
-        def project(point):
+        def project(point: mathutils.Vector) -> mathutils.Vector:
             if bvh is None:
                 return point
             hit = bvh.find_nearest(point)

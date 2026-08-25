@@ -1,4 +1,5 @@
 import json
+from typing import TYPE_CHECKING
 
 import bpy
 
@@ -8,8 +9,17 @@ from . import operators
 from . import sidematch
 from . import version
 
+if TYPE_CHECKING:
+    from . import state as state_mod
 
-def _section(layout, state, prop_name, label, icon='NONE'):
+
+def _section(
+    layout: bpy.types.UILayout,
+    state: "state_mod.RetopPatchState",
+    prop_name: str,
+    label: str,
+    icon: str = 'NONE',
+) -> bpy.types.UILayout | None:
     """Collapsible section header. Returns the body layout when open, else None."""
     box = layout.box()
     header = box.row(align=True)
@@ -21,7 +31,11 @@ def _section(layout, state, prop_name, label, icon='NONE'):
     return box if getattr(state, prop_name) else None
 
 
-def _draw_session(layout, context, state):
+def _draw_session(
+    layout: bpy.types.UILayout,
+    context: bpy.types.Context,
+    state: "state_mod.RetopPatchState",
+) -> None:
     """Session control: start/stop, current phase, and where commits land."""
     box = layout.box()
     stale = state.session_active and not operators.session_is_running()
@@ -79,7 +93,11 @@ def _draw_session(layout, context, state):
     box.operator("retop.end_session", text="Stop Session", icon='X')
 
 
-def _draw_warnings(layout, context, obj):
+def _draw_warnings(
+    layout: bpy.types.UILayout,
+    context: bpy.types.Context,
+    obj: bpy.types.Object | None,
+) -> None:
     """Conditions that make retopology silently wrong. Drawn on every tab: they
     only ever appear when something is actually broken.
     """
@@ -118,7 +136,9 @@ def _draw_warnings(layout, context, obj):
     warn.label(text="Re-import it through the bridge.")
 
 
-def _draw_active_patch(layout, state):
+def _draw_active_patch(
+    layout: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
     """The picked patch and its spans. Drawn above the tabs, not inside one:
     losing the span controls because you switched to the Display tab in the
     middle of an adjustment would be the panel fighting the workflow.
@@ -212,7 +232,9 @@ def _draw_active_patch(layout, state):
     row.operator("retop.clear_preview", text="Discard", icon='X')
 
 
-def _draw_match_block(box, state):
+def _draw_match_block(
+    box: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
     """Matching a committed neighbour's density along a shared side."""
     references = sidematch.active_sides()
     available = [reference for reference in references if reference.available]
@@ -260,7 +282,7 @@ def _draw_match_block(box, state):
         note.label(text="A grid has one span per direction.")
 
 
-def _pinned_sides(state):
+def _pinned_sides(state: "state_mod.RetopPatchState") -> list[str]:
     """Flat side indices the user has matched by hand on this patch."""
     if not state.side_overrides:
         return []
@@ -270,14 +292,18 @@ def _pinned_sides(state):
         return []
 
 
-def _draw_matching_settings(body, state):
+def _draw_matching_settings(
+    body: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
     body.prop(state, "auto_match_neighbours")
     body.label(text="Applies to every generator", icon='INFO')
     body.prop(state, "match_margin")
     body.label(text="Only sides you point at use it", icon='INFO')
 
 
-def _draw_tab_patch(layout, state):
+def _draw_tab_patch(
+    layout: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
     body = _section(layout, state, "show_patch_settings",
                     "Patch Settings", icon='MOD_MESHDEFORM')
     if body:
@@ -288,7 +314,9 @@ def _draw_tab_patch(layout, state):
         _draw_ngon_settings(body.column(), state)
 
 
-def _draw_patch_settings(body, state):
+def _draw_patch_settings(
+    body: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
     body.label(text="Starting Resolution")
     body.row(align=True).prop(state, "resolution", expand=True)
     body.label(text="Scales the computed span count", icon='INFO')
@@ -310,7 +338,9 @@ def _draw_patch_settings(body, state):
     body.prop(state, "boundary_weld_distance")
 
 
-def _draw_ngon_settings(body, state):
+def _draw_ngon_settings(
+    body: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
     body.prop(state, "ngon_mode", text="N-gon by default")
     body.prop(state, "ngon_angle")
     body.prop(state, "ngon_planar_tolerance")
@@ -324,7 +354,9 @@ def _draw_ngon_settings(body, state):
     body.label(text="Flat faces only; one hole is bridged", icon='INFO')
 
 
-def _draw_tab_picker(layout, state):
+def _draw_tab_picker(
+    layout: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
     body = layout.box().column()
     body.label(text="Picker Settings", icon='RESTRICT_SELECT_OFF')
     body.separator()
@@ -337,7 +369,11 @@ def _draw_tab_picker(layout, state):
     body.prop(state, "pick_max_distance")
 
 
-def _draw_tab_display(layout, state, obj):
+def _draw_tab_display(
+    layout: bpy.types.UILayout,
+    state: "state_mod.RetopPatchState",
+    obj: bpy.types.Object | None,
+) -> None:
     body = _section(layout, state, "show_preview_appearance",
                     "Preview Appearance", icon='SHADING_RENDERED')
     if body:
@@ -386,7 +422,9 @@ def _draw_tab_display(layout, state, obj):
         box.label(text="Isolating also shows <Object>_Retop", icon='INFO')
 
 
-def _draw_cad_display(layout, state):
+def _draw_cad_display(
+    layout: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
     """The Plasticity structure drawn over the source surface.
 
     Its own block rather than a line inside Preview Appearance: this describes
@@ -421,7 +459,9 @@ def _draw_cad_display(layout, state):
     box.label(text="Drawn while a session runs", icon='INFO')
 
 
-def _draw_tab_output(layout, state):
+def _draw_tab_output(
+    layout: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
     body = layout.box().column()
     body.label(text="Shading", icon='SHADING_SOLID')
     body.separator()
@@ -439,7 +479,7 @@ def _draw_tab_output(layout, state):
         body.label(text="Mirrors the path below Inbox", icon='INFO')
 
 
-def _draw_tab_keys(layout):
+def _draw_tab_keys(layout: bpy.types.UILayout) -> None:
     body = layout.box().column(align=True)
     body.label(text="Keybinds", icon='EVENT_A')
     body.separator()
@@ -477,7 +517,7 @@ def _draw_tab_keys(layout):
         body.separator()
 
 
-def _draw_tab_system(layout):
+def _draw_tab_system(layout: bpy.types.UILayout) -> None:
     body = layout.box().column()
     body.label(text="System", icon='PREFERENCES')
     body.separator()
@@ -497,7 +537,7 @@ class VIEW3D_PT_retop(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Retop"
 
-    def draw(self, context):
+    def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         state = context.scene.plasticity_retop
         obj = context.active_object
@@ -555,11 +595,11 @@ class VIEW3D_PT_retop(bpy.types.Panel):
 CLASSES = (VIEW3D_PT_retop,)
 
 
-def register():
+def register() -> None:
     for cls in CLASSES:
         bpy.utils.register_class(cls)
 
 
-def unregister():
+def unregister() -> None:
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

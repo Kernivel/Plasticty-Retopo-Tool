@@ -302,6 +302,24 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   `redo_post` run `_on_undo_redo`, which drops the active patch and any re-edit
   snapshot (undo has just replaced the mesh state they described) and touches
   **scene properties only**.
+- **Type hints everywhere, but never `from __future__ import annotations`.**
+  A Blender property is declared *as an annotation* —
+  `span_u: bpy.props.IntProperty(...)`, nothing after an `=` — so the thing
+  Blender reads to register it is exactly the thing PEP 563 turns into a
+  string. Blender 5.0 resolves those strings back (checked: all 73 properties
+  still register with the future imported), but `bl_info` says 4.2, that
+  behaviour belongs to the Blender being run rather than to this code, and the
+  failure mode is the silent kind — the group registers *nothing*, nothing
+  raises, and the panel just draws empty. Not worth relying on: Python 3.11
+  evaluates `list[int]` and `X | None` unaided, and a forward reference is
+  quoted individually. For the same reason **only methods are annotated inside
+  a registered class** — never its class-body attributes, which is the one
+  dict the registration walk reads.
+  A module needing a *new* runtime import purely for a hint puts it under
+  `if TYPE_CHECKING:` and quotes the annotation instead: `sides`, `patch_data`
+  and `cad_display` stay free of Blender imports, and `overlay` must not widen
+  what a draw handler pulls in. `tests/test_registration.py` pins all of it,
+  including that every function still carries its types.
 - **Never unregister an operator class from inside its own `execute()`** —
   that crashes Blender natively. `RETOP_OT_reload_addon` defers the real work
   to a `bpy.app.timers` callback.

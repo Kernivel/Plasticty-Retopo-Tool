@@ -31,12 +31,12 @@ TWO_SPAN_GENERATORS = frozenset({QUAD, WEDGE, RING})
 
 # How the two spans are labelled in the panel, per generator. Falls back to
 # along/across, which is what a wedge's pair means.
-SPAN_LABELS = {
+SPAN_LABELS: dict[str, tuple[str, str]] = {
     QUAD: ("Span U", "Span V"),
     RING: ("Span (around)", "Span (across)"),
 }
 DEFAULT_SPAN_LABELS = ("Span (along)", "Span (across)")
 
 
-def span_labels(generator_name):
+def span_labels(generator_name: str) -> tuple[str, str]:
     return SPAN_LABELS.get(generator_name, DEFAULT_SPAN_LABELS)

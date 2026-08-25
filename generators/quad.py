@@ -1,15 +1,22 @@
+from typing import TYPE_CHECKING, Any
+
+import mathutils
+
 from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
+
+if TYPE_CHECKING:
+    from mathutils.bvhtree import BVHTree
 
 
 class QuadGenerator(Generator):
     name = constants.QUAD
 
-    def matches(self, num_sides):
+    def matches(self, num_sides: int) -> bool:
         return num_sides == 4
 
-    def default_spans(self, sides):
+    def default_spans(self, sides: list[list[mathutils.Vector]]) -> dict[str, int]:
         """sides: list of 4 point-lists (already resolved to Vectors), walking
         the patch boundary in order."""
         lengths = []
@@ -27,7 +34,12 @@ class QuadGenerator(Generator):
         span_v = max(1, round(((lengths[1] + lengths[3]) / 2) / max(target_edge, 1e-6)))
         return {"span_u": span_u, "span_v": span_v}
 
-    def generate(self, sides, span_settings, bvh=None):
+    def generate(
+        self,
+        sides: list[list[mathutils.Vector]],
+        span_settings: dict[str, Any],
+        bvh: "BVHTree | None" = None,
+    ) -> GenerationResult:
         if len(sides) != 4:
             raise ValueError("QuadGenerator expects exactly 4 sides")
 

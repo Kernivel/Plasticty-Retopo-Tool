@@ -24,13 +24,13 @@ from . import operators
 from . import ui
 
 
-def register():
+def register() -> None:
     state.register()
     operators.register()
     ui.register()
 
 
-def unregister():
+def unregister() -> None:
     ui.unregister()
     operators.unregister()
     state.unregister()

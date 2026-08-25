@@ -37,12 +37,16 @@ it's a mode the user toggles during a session, not something a side count
 selects.
 """
 import math
+from typing import TYPE_CHECKING, Any
 
 import mathutils
 
 from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
+
+if TYPE_CHECKING:
+    from mathutils.bvhtree import BVHTree
 
 DEFAULT_ANGLE = 20.0  # degrees of boundary turn per kept point
 
@@ -52,7 +56,9 @@ DEFAULT_ANGLE = 20.0  # degrees of boundary turn per kept point
 TURN_EPSILON = 0.05
 
 
-def turn_at(prev_co, co, next_co):
+def turn_at(
+    prev_co: mathutils.Vector, co: mathutils.Vector, next_co: mathutils.Vector
+) -> float:
     """How much the boundary deviates from straight at `co`, in degrees.
     0 is dead straight; a 90 degree corner returns 90.
     """
@@ -63,7 +69,7 @@ def turn_at(prev_co, co, next_co):
     return math.degrees(incoming.angle(outgoing, 0.0))
 
 
-def side_turn_degrees(points):
+def side_turn_degrees(points: list[mathutils.Vector]) -> float:
     """Total turning angle along a polyline, in degrees.
 
     0 for a straight side however long it is, 180 for a half circle.
@@ -71,7 +77,9 @@ def side_turn_degrees(points):
     return sum(turn_at(a, b, c) for a, b, c in zip(points, points[1:], points[2:]))
 
 
-def side_points(points, angle_per_segment):
+def side_points(
+    points: list[mathutils.Vector], angle_per_segment: float
+) -> list[mathutils.Vector]:
     """The boundary vertices this side keeps, first and last always included.
 
     Walks the side accumulating how much it has turned since the last kept
@@ -107,14 +115,18 @@ def side_points(points, angle_per_segment):
     return kept
 
 
-def side_segments(points, angle_per_segment):
+def side_segments(points: list[mathutils.Vector], angle_per_segment: float) -> int:
     """How many segments a side ends up with -- never fewer than one, since a
     side always keeps its two corners.
     """
     return max(1, len(side_points(points, angle_per_segment)) - 1)
 
 
-def loop_points(loop_sides, angle_per_segment, forced_segments=None):
+def loop_points(
+    loop_sides: list[list[mathutils.Vector]],
+    angle_per_segment: float,
+    forced_segments: dict[int, int] | None = None,
+) -> tuple[list[mathutils.Vector], list[int], list[int]]:
     """Walk one boundary loop's sides and return
     (points, corner_indices, segments_per_side).
 
@@ -147,12 +159,18 @@ def loop_points(loop_sides, angle_per_segment, forced_segments=None):
     return points, corners, allocation
 
 
-def loop_allocation(loop_sides, angle_per_segment, forced_segments=None):
+def loop_allocation(
+    loop_sides: list[list[mathutils.Vector]],
+    angle_per_segment: float,
+    forced_segments: dict[int, int] | None = None,
+) -> list[int]:
     """Segments per side for one loop -- what the commit path registers."""
     return loop_points(loop_sides, angle_per_segment, forced_segments)[2]
 
 
-def _nearest_pair(outer, hole):
+def _nearest_pair(
+    outer: list[mathutils.Vector], hole: list[mathutils.Vector]
+) -> tuple[int, int] | None:
     """Indices (i, j) of the closest outer/hole point pair. O(n*m), which is
     nothing at these counts and avoids a KD-tree for a dozen points.
     """
@@ -167,7 +185,7 @@ def _nearest_pair(outer, hole):
     return best
 
 
-def _arc(start, end, count):
+def _arc(start: int, end: int, count: int) -> list[int]:
     """Indices from `start` forward to `end` inclusive, wrapping at `count`."""
     walk = [start]
     current = start
@@ -177,7 +195,7 @@ def _arc(start, end, count):
     return walk
 
 
-def _plane_uvs(points):
+def _plane_uvs(points: list[mathutils.Vector]) -> list[tuple[float, float]]:
     """UVs from a best-fit plane through the boundary (Newell's method), scaled
     into 0..1. A patch retopped as an n-gon is planar or nearly so, which is
     exactly when a planar projection is the right unwrap.
@@ -214,14 +232,19 @@ def _plane_uvs(points):
 class NgonGenerator(Generator):
     name = constants.NGON
 
-    def matches(self, num_sides):
+    def matches(self, num_sides: int) -> bool:
         # Never picked by side count -- see the module docstring.
         return False
 
-    def default_spans(self, sides):
+    def default_spans(self, sides: list[list[mathutils.Vector]]) -> dict[str, int]:
         return {}
 
-    def generate(self, sides, span_settings, bvh=None):
+    def generate(
+        self,
+        sides: list[list[mathutils.Vector]],
+        span_settings: dict[str, Any],
+        bvh: "BVHTree | None" = None,
+    ) -> GenerationResult:
         """`sides` are the outer loop's sides in boundary order, consecutive
         sides sharing their corner point. `bvh` is ignored: every vertex sits
         on the boundary, i.e. already exactly on the CAD surface -- there is
@@ -246,7 +269,12 @@ class NgonGenerator(Generator):
         result.side_allocation = allocation
         return result
 
-    def generate_holed(self, loops_sides, span_settings, bvh=None):
+    def generate_holed(
+        self,
+        loops_sides: list[list[list[mathutils.Vector]]],
+        span_settings: dict[str, Any],
+        bvh: "BVHTree | None" = None,
+    ) -> GenerationResult:
         """Fill a face with one hole: two n-gons joined by two bridge edges.
 
         `loops_sides` is [outer_sides, hole_sides], outer first (the caller

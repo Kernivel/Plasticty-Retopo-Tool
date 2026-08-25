@@ -2,9 +2,20 @@
 reprojection helpers, independent of any Blender operator/UI code so they can
 be unit-exercised from a --background script.
 """
+from typing import TYPE_CHECKING
+
+import mathutils
+
+if TYPE_CHECKING:
+    # Imported for annotations only, so the two BVH helpers keep pulling
+    # bvhtree in lazily the way they always have.
+    import bpy
+    from mathutils.bvhtree import BVHTree
 
 
-def resample_polyline_by_arclength(points, count):
+def resample_polyline_by_arclength(
+    points: list[mathutils.Vector], count: int
+) -> list[mathutils.Vector]:
     """Resample an ordered polyline to exactly `count` points (count >= 2),
     evenly spaced by arc length, keeping the first and last points fixed.
     """
@@ -47,7 +58,14 @@ def resample_polyline_by_arclength(points, count):
     return result
 
 
-def coons_patch_grid(side_bottom, side_right, side_top, side_left, span_u, span_v):
+def coons_patch_grid(
+    side_bottom: list[mathutils.Vector],
+    side_right: list[mathutils.Vector],
+    side_top: list[mathutils.Vector],
+    side_left: list[mathutils.Vector],
+    span_u: int,
+    span_v: int,
+) -> list[list[mathutils.Vector]]:
     """Build a (span_u+1) x (span_v+1) grid of 3D points spanning a 4-sided
     patch, via bilinearly-blended Coons interpolation.
 
@@ -96,7 +114,11 @@ def coons_patch_grid(side_bottom, side_right, side_top, side_left, span_u, span_
     return grid
 
 
-def fan_collapsed_grid(side_ab, side_bc, side_ca):
+def fan_collapsed_grid(
+    side_ab: list[mathutils.Vector],
+    side_bc: list[mathutils.Vector],
+    side_ca: list[mathutils.Vector],
+) -> list[list[mathutils.Vector]]:
     """Build a triangular-domain grid for a 3-sided patch A-B-C by feeding a
     Coons quad solver a degenerate quad where one corner is repeated: quad
     corners (P00, P10, P11, P01) = (A, B, C, C).
@@ -129,7 +151,7 @@ def fan_collapsed_grid(side_ab, side_bc, side_ca):
     return coons_patch_grid(side_ab, side_bc, side_top, side_left, span_u, span_v)
 
 
-def build_bvh_with_polygon_map(mesh):
+def build_bvh_with_polygon_map(mesh: "bpy.types.Mesh") -> tuple["BVHTree", list[int]]:
     """BVH over every polygon of `mesh` (local object space), plus a list
     mapping each BVH triangle index back to the polygon it came from.
 
@@ -152,7 +174,9 @@ def build_bvh_with_polygon_map(mesh):
     return BVHTree.FromPolygons(verts, tris), tri_poly
 
 
-def build_bvh_for_polygons(mesh, poly_indices):
+def build_bvh_for_polygons(
+    mesh: "bpy.types.Mesh", poly_indices: "list[int]"
+) -> "BVHTree":
     """Build a BVHTree restricted to the given polygons of `mesh`, in the
     mesh's local object space.
     """

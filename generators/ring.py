@@ -20,17 +20,27 @@ is one number for the whole loop rather than a per-side one. Spans are still
 propagated *out* of it, per side (see operators' commit path).
 """
 import math
+from typing import TYPE_CHECKING, Any
+
+import mathutils
 
 from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
 
+if TYPE_CHECKING:
+    from mathutils.bvhtree import BVHTree
 
-def polyline_length(points):
+# One boundary loop, already split into sides and resolved to points: a ring
+# takes two of them (outer first, then the hole).
+Loop = list[list[mathutils.Vector]]
+
+
+def polyline_length(points: list[mathutils.Vector]) -> float:
     return sum((b - a).length for a, b in zip(points, points[1:]))
 
 
-def allocate_segments(lengths, total):
+def allocate_segments(lengths: list[float], total: int) -> list[int]:
     """Split `total` segments among sides proportionally to `lengths`, with at
     least one segment per side (largest-remainder rounding).
 
@@ -67,7 +77,9 @@ def allocate_segments(lengths, total):
     return alloc
 
 
-def ring_from_sides(sides, total):
+def ring_from_sides(
+    sides: list[list[mathutils.Vector]], total: int
+) -> tuple[list[mathutils.Vector], list[int], list[int]]:
     """Resample a loop's sides into exactly `total` points walking around it.
 
     Returns (points, corner_indices, alloc): `corner_indices` are the positions
@@ -105,7 +117,7 @@ BAND_GAP_SPREAD = 4.0       # widest gap over narrowest, sampled around the loop
 BAND_PERIMETER_RATIO = 6.0  # outer perimeter over inner
 
 
-def band_gaps(loops, samples=16):
+def band_gaps(loops: list[Loop], samples: int = 16) -> list[float]:
     """Distance from a sample of outer-loop points to the nearest inner-loop
     point, walking the outer boundary."""
     outer = [p for side in loops[0] for p in side]
@@ -116,7 +128,7 @@ def band_gaps(loops, samples=16):
     return [min((p - q).length for q in inner) for p in outer[::step]]
 
 
-def is_band(loops):
+def is_band(loops: list[Loop]) -> bool:
     """True when the two loops sit at a comparable distance all the way round,
     i.e. when a ring of quads across them is the right fill. See above.
     """
@@ -143,7 +155,7 @@ def is_band(loops):
     return max(outer, inner) <= min(outer, inner) * BAND_PERIMETER_RATIO
 
 
-def around_count(loops, span_u):
+def around_count(loops: list[Loop], span_u: int) -> int:
     """Points around the ring for a given "around" span.
 
     Both loops must come out with exactly the same count, and neither can have
@@ -154,7 +166,9 @@ def around_count(loops, span_u):
     return max(int(span_u), len(loops[0]), len(loops[1]), 3)
 
 
-def align_rings(outer, inner):
+def align_rings(
+    outer: list[mathutils.Vector], inner: list[mathutils.Vector]
+) -> tuple[list[mathutils.Vector], dict[int, int]]:
     """Re-index `inner` so that inner[i] faces outer[i].
 
     A hole's boundary winds the opposite way from the face's outer boundary,
@@ -168,7 +182,7 @@ def align_rings(outer, inner):
     n = len(outer)
     samples = range(0, n, max(1, n // 16))
 
-    def order_at(reverse, offset, i):
+    def order_at(reverse: bool, offset: int, i: int) -> int:
         return (offset - i) % n if reverse else (offset + i) % n
 
     best = None
@@ -188,15 +202,15 @@ def align_rings(outer, inner):
 class RingGenerator(Generator):
     name = constants.RING
 
-    def matches(self, num_sides):
+    def matches(self, num_sides: int) -> bool:
         return False  # chosen by loop count, never by side count
 
-    def _target_edge(self, loops):
+    def _target_edge(self, loops: list[Loop]) -> float:
         lengths = [(b - a).length
                    for sides in loops for side in sides for a, b in zip(side, side[1:])]
         return (sum(lengths) / len(lengths)) if lengths else 1.0
 
-    def default_spans(self, loops):
+    def default_spans(self, loops: list[Loop]) -> dict[str, int]:
         outer_sides, inner_sides = loops[0], loops[1]
         target_edge = max(self._target_edge(loops), 1e-6)
 
@@ -216,7 +230,12 @@ class RingGenerator(Generator):
 
         return {"span_u": around, "span_v": across}
 
-    def generate(self, loops, span_settings, bvh=None):
+    def generate(
+        self,
+        loops: list[Loop],
+        span_settings: dict[str, Any],
+        bvh: "BVHTree | None" = None,
+    ) -> GenerationResult:
         if len(loops) != 2:
             raise ValueError("RingGenerator expects exactly two boundary loops")
 
@@ -251,7 +270,7 @@ class RingGenerator(Generator):
                 uvs.append((0.5 + 0.5 * radius * math.cos(angle),
                             0.5 + 0.5 * radius * math.sin(angle)))
 
-        def index_of(r, i):
+        def index_of(r: int, i: int) -> int:
             return r * n + (i % n)
 
         faces = []

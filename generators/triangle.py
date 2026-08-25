@@ -1,9 +1,15 @@
+from typing import TYPE_CHECKING, Any
+
+import mathutils
+
 from .. import constants
 from .. import geometry
 from .base import Generator, GenerationResult
 
+if TYPE_CHECKING:
+    from mathutils.bvhtree import BVHTree
 
-def _dedup_face(face):
+def _dedup_face(face: tuple[int, ...]) -> tuple[int, ...] | None:
     """Drop consecutive duplicate indices in a face loop (used where a Coons
     row collapses to a single apex vertex, turning a quad into a triangle).
     Returns None if fewer than 3 unique vertices remain.
@@ -22,10 +28,10 @@ def _dedup_face(face):
 class TriangleGenerator(Generator):
     name = constants.TRIANGLE
 
-    def matches(self, num_sides):
+    def matches(self, num_sides: int) -> bool:
         return num_sides == 3
 
-    def default_spans(self, sides):
+    def default_spans(self, sides: list[list[mathutils.Vector]]) -> dict[str, int]:
         """sides: list of 3 point-lists (already resolved to Vectors), walking
         the patch boundary in order."""
         seg_lengths = []
@@ -43,7 +49,12 @@ class TriangleGenerator(Generator):
         span = max(1, round(avg_side / max(target_edge, 1e-6)))
         return {"span": span}
 
-    def generate(self, sides, span_settings, bvh=None):
+    def generate(
+        self,
+        sides: list[list[mathutils.Vector]],
+        span_settings: dict[str, Any],
+        bvh: "BVHTree | None" = None,
+    ) -> GenerationResult:
         if len(sides) != 3:
             raise ValueError("TriangleGenerator expects exactly 3 sides")
 
