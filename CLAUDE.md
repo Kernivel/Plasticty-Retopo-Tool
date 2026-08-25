@@ -11,7 +11,22 @@ this is an independent implementation.
 python scripts/run_tests.py          # headless test suite (needs Blender only)
 python scripts/deploy.py             # copy into Blender's addons folder
 python scripts/deploy.py --list      # show detected Blender config dirs
+
+# retopologize every patch of a real bridge export and measure the result:
+# deviation from the CAD surface, topology, cell quality
+blender tests/fixtures/TestCases.blend --background --python scripts/benchmark.py
+blender tests/fixtures/TestCases.blend --background --python scripts/benchmark.py -- --resolution HIGH --object Cylinder
 ```
+
+`tests/fixtures/TestCases.blend` is real Plasticity output imported through the
+bridge — the one place the input contract is tested rather than assumed, since
+every other test builds its mesh from the same mental model as the code.
+`tests/test_fixtures.py` pins what comes out of it, and
+`tests/fixtures/README.md` says what each shape is for, what it deliberately
+does *not* cover, and why the file must be treated as frozen. **Deviation is
+measured across face interiors, never at vertices** — the generators reproject
+interior vertices onto the surface by construction, so a vertex-only figure
+reads ~0 on every shape and proves nothing.
 
 There may be no system Python (Windows' `python` can be the Store stub, and
 `py` may not exist). Both scripts are stdlib-only, so run them with Blender's
