@@ -16,7 +16,19 @@ python scripts/deploy.py --list      # show detected Blender config dirs
 # deviation from the CAD surface, topology, cell quality
 blender tests/fixtures/TestCases.blend --background --python scripts/benchmark.py
 blender tests/fixtures/TestCases.blend --background --python scripts/benchmark.py -- --resolution HIGH --object Cylinder
+
+# regenerate the two documents derived from that fixture
+blender tests/fixtures/TestCases.blend --background --python scripts/gen_results.py       # RESULTS.md
+blender tests/fixtures/TestCases.blend --background --python scripts/gen_expectations.py  # the EXPECTED table
 ```
+
+`RESULTS.md` is that benchmark written up as tables, and `gen_expectations.py`
+emits the golden table `tests/test_fixtures.py` asserts on. **Both are
+generated — never hand-edit either.** A re-export of the fixture renumbers
+every Plasticity face id even when no vertex moves, so a stale table makes
+"the fixture changed" indistinguishable from "the code regressed"; regenerate
+and read the diff instead, where generator and side count per face are the
+entries that should hold steady.
 
 `tests/fixtures/TestCases.blend` is real Plasticity output imported through the
 bridge — the one place the input contract is tested rather than assumed, since

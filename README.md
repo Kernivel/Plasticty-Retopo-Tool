@@ -160,6 +160,19 @@ python scripts/run_tests.py      # headless suite
 python scripts/deploy.py         # push to Blender's addons folder
 ```
 
+**[RESULTS.md](RESULTS.md)** is the current benchmark: every patch of every
+fixture shape retopologized and measured — deviation from the CAD surface,
+topology, cell quality — plus the known gaps. It is generated, never
+hand-written:
+
+```bash
+blender tests/fixtures/TestCases.blend --background --python scripts/gen_results.py
+```
+
+The fixtures behind it are real Plasticity output imported through the bridge;
+[tests/fixtures/README.md](tests/fixtures/README.md) says what each shape is
+for and what it deliberately does not cover.
+
 No system Python? Both scripts are plain stdlib, so Blender's own interpreter
 runs them — on Windows:
 

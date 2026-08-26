@@ -185,16 +185,22 @@ commits in the fixture's own face order, and span propagation seeds everything
 downstream from whichever patch commits first — so the *same shapes in a
 different order* give a legitimately different mesh:
 
-| `Cube Bevel Edges` | result |
-|---|---|
-| fixture order | 366v / 339f |
-| face id ascending | 413v / 394f |
-| face id descending | 32v / 29f |
+| Object | Fixture order | Face id ascending | Face id descending |
+|---|--:|--:|--:|
+| `Cube Bevel Edges` | 366v / 339f | 413v / 394f | 69v / 56f |
+| `Cube Chamfer Edges` | 44v / 36f | 42v / 32f | 22v / 16f |
 
-A 10x swing, with no change to the geometry or to the generator chosen for any
-face. That is why the table records generator and side count as the entries
+A 7x swing on the bevelled cube, with no change to the geometry or to the
+generator chosen for any face. Reversing the fixture's own order rather than
+sorting descending pushes it further still, to 32v / 29f — the orderings are
+different and so are the answers, which is itself the point.
+
+That is why the golden table records generator and side count as the entries
 that should hold steady, and treats vertex and face counts as regression
 detectors rather than quality scores.
+
+These figures are regenerated into `RESULTS.md` rather than maintained here;
+see that file for the current run.
 
 The open-edge counts have the same character, for a related reason:
 auto-matching can only match an *already committed* neighbour
