@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 import bpy
 
 from . import constants
+from . import keymap
 from . import mesh_build
 from . import operators
 from . import sidematch
@@ -52,8 +53,29 @@ def _draw_session(
         return
 
     if not state.session_active:
+        if context.mode != 'OBJECT':
+            # The operator's poll already greys the button out; without this
+            # the panel offers a dead button and no reason for it.
+            col = box.column(align=True)
+            col.label(text=f"Leave {context.mode.replace('_', ' ').title()} to start",
+                      icon='INFO')
+            col.enabled = True
         box.operator("retop.session", text="Start Retop Session", icon='PLAY')
         box.label(text="Click an object, then its surfaces", icon='INFO')
+        return
+
+    if state.session_phase == 'TWEAK':
+        # Before the mode check below: Blender *is* in Edit Mode here, and it
+        # is there because the session put it there. Saying "paused" would be
+        # exactly backwards.
+        col = box.column(align=True)
+        col.label(text="Hand-editing", icon='EDITMODE_HLT')
+        col.label(text=f"In: {state.session_object_name}")
+        col.label(text="K knife · Ctrl+R loop · J connect · G move")
+        box.operator("retop.end_tweak",
+                     text=f"Back to Retop ({keymap.describe('end_tweak')})",
+                     icon='LOOP_BACK')
+        _draw_tweak_settings(box.column(align=True), state)
         return
 
     if context.mode != 'OBJECT':
@@ -72,6 +94,13 @@ def _draw_session(
         box.label(text="Click a Plasticity object in the viewport")
     elif phase == 'PATCH':
         box.label(text="Pick a surface", icon='RESTRICT_SELECT_OFF')
+        # Offered here and nowhere else, for the same reason Tab is bound here
+        # and nowhere else: a patch open for adjustment has its faces out of
+        # the result mesh, and Edit Mode would discard the snapshot that puts
+        # them back.
+        box.operator("retop.tweak_mesh",
+                     text=f"Hand-Edit Mesh ({keymap.describe('hand_edit')})",
+                     icon='EDITMODE_HLT')
         box.label(text=f"In: {state.session_object_name}")
         session_obj = bpy.data.objects.get(state.session_object_name)
         if session_obj is not None:
@@ -86,7 +115,7 @@ def _draw_session(
                                f"{done} patch(es)", icon='OUTLINER_OB_MESH')
                 if done:
                     box.label(text="Click a done patch to re-edit it", icon='FILE_REFRESH')
-        box.label(text="Esc: leave this object")
+        box.label(text=f"{keymap.describe('back')}: leave this object")
     else:
         box.label(text="Adjust & commit", icon='TOOL_SETTINGS')
         box.label(text=f"In: {state.session_object_name}")
@@ -113,6 +142,12 @@ def _draw_warnings(
             missing = orphan.name[:-len(mesh_build.RESULT_NAME_SUFFIX)]
             warn.label(text=f"{orphan.name} — '{missing}' is gone")
         warn.label(text="Rename it to <YourObject>_Retop to re-edit it.")
+
+    # In a hand-edit the active object *is* the result mesh, on purpose. The
+    # "this is the retopology of X, start a session on X" box below would be
+    # answering a question nobody asked.
+    if context.scene.plasticity_retop.session_phase == 'TWEAK':
+        return
 
     if obj is None or obj.type != 'MESH' or obj.data.get("face_ids"):
         return
@@ -240,9 +275,9 @@ def _draw_match_block(
     available = [reference for reference in references if reference.available]
 
     row = box.row(align=True)
-    row.operator("retop.match_neighbour",
-                 text="Side Highlight (M)", icon='SNAP_EDGE',
-                 depress=state.match_mode)
+    row.operator("retop.toggle_match_mode",
+                 text=f"Side Highlight ({keymap.describe('match_mode')})",
+                 icon='SNAP_EDGE', depress=state.match_mode)
     if not references:
         return
 
@@ -299,6 +334,22 @@ def _draw_matching_settings(
     body.label(text="Applies to every generator", icon='INFO')
     body.prop(state, "match_margin")
     body.label(text="Only sides you point at use it", icon='INFO')
+
+
+def _draw_tweak_settings(
+    body: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
+    """How the hand-edit round trip sets Blender's tool settings up.
+
+    Read on the way *in*, so changing one mid-edit does nothing until the next
+    trip -- said in the panel rather than left to be discovered.
+    """
+    body.separator()
+    body.label(text="Hand-Edit Setup", icon='SNAP_VERTEX')
+    body.prop(state, "tweak_auto_merge")
+    body.prop(state, "tweak_merge_distance")
+    body.prop(state, "tweak_snap_surface")
+    body.label(text="Applied when Edit Mode opens", icon='INFO')
 
 
 def _draw_tab_patch(
@@ -367,6 +418,9 @@ def _draw_tab_picker(
     body.separator()
     body.prop(state, "pick_depth_tolerance")
     body.prop(state, "pick_max_distance")
+    # Filed here rather than under Patch: this is the manual half of matching
+    # -- what you reach for when a side could not be matched automatically.
+    _draw_tweak_settings(body, state)
 
 
 def _draw_tab_display(
@@ -379,7 +433,10 @@ def _draw_tab_display(
     if body:
         body.prop(state, "preview_color")
         body.prop(state, "preview_alpha", slider=True)
-        body.prop(state, "preview_offset")
+        body.prop(state, "preview_offset", text="Extra Offset")
+        note = body.column()
+        note.label(text="Follows Result Offset; adds to it", icon='INFO')
+        note.enabled = False
 
     result_obj = None
     if obj is not None and obj.type == 'MESH':
@@ -454,14 +511,67 @@ def _draw_cad_display(
     sub_flow.label(text="not Plasticity's own isoparms.")
 
     box.separator()
+    box.prop(state, "cad_display_xray")
+    if not state.cad_display_xray:
+        box.label(text="B-rep dots still draw on top", icon='INFO')
+
+    box.separator()
     box.label(text="Show for:")
     box.row(align=True).prop(state, "cad_display_scope", expand=True)
     box.label(text="Drawn while a session runs", icon='INFO')
 
 
-def _draw_tab_output(
-    layout: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+def _draw_mirror(
+    layout: bpy.types.UILayout,
+    context: bpy.types.Context,
+    state: "state_mod.RetopPatchState",
 ) -> None:
+    """Symmetry on the committed mesh.
+
+    Which axes are on is read off the Mirror modifier rather than a scene
+    property: they belong to one object. So this block describes whatever
+    object the session (or the selection) currently resolves to, and says which
+    one that is.
+    """
+    body = layout.box().column()
+    body.label(text="Mirror", icon='MOD_MIRROR')
+    body.separator()
+
+    source, result = mesh_build.mirror_target(context)
+    if result is None:
+        body.label(text="Nothing committed to mirror yet", icon='INFO')
+        if source is not None:
+            body.label(text=f"Would apply to: {source.name}")
+        return
+
+    body.label(text=f"On: {result.name}")
+    axes = mesh_build.mirror_axes(result)
+    row = body.row(align=True)
+    for axis, enabled in zip(mesh_build.MIRROR_AXES, axes):
+        # depress, not a checkbox: these are operator buttons, and the pressed
+        # look is the only way to show state on one.
+        row.operator("retop.mirror_axis", text=axis, depress=enabled).axis = axis
+    body.label(text=f"{keymap.describe('mirror')}, then X / Y / Z", icon='EVENT_A')
+
+    if not any(axes):
+        return
+
+    body.separator()
+    body.prop(state, "mirror_clip")
+    body.prop(state, "mirror_merge_distance")
+    # The one thing worth a line: the mirrored half is a modifier, so it can't
+    # be picked or re-edited until it is applied.
+    body.label(text="Mirrored half is a modifier", icon='INFO')
+    body.operator("retop.apply_mirror", text="Apply Mirror", icon='CHECKMARK')
+
+
+def _draw_tab_output(
+    layout: bpy.types.UILayout,
+    context: bpy.types.Context,
+    state: "state_mod.RetopPatchState",
+) -> None:
+    _draw_mirror(layout, context, state)
+
     body = layout.box().column()
     body.label(text="Shading", icon='SHADING_SOLID')
     body.separator()
@@ -479,42 +589,22 @@ def _draw_tab_output(
         body.label(text="Mirrors the path below Inbox", icon='INFO')
 
 
-def _draw_tab_keys(layout: bpy.types.UILayout) -> None:
-    body = layout.box().column(align=True)
-    body.label(text="Keybinds", icon='EVENT_A')
-    body.separator()
-    for phase_label, binds in (
-        ("Pick an object", [("Click", "Enter object"), ("Esc", "End session")]),
-        ("Pick a surface", [("Click", "Pick surface (again = re-edit)"),
-                            ("Esc", "Leave object")]),
-        ("Adjust & commit", [
-            ("Ctrl+Scroll", "Span +/-"),
-            ("0-9", "Type span directly"),
-            ("Backspace", "Edit typed span"),
-            ("Scroll", "Zoom (unchanged)"),
-            ("Tab", "U/V direction (quad/wedge)"),
-            ("N", "N-gon mode on/off"),
-            ("M", "Side highlight on/off"),
-            ("Click", "Match the side under the cursor"),
-            ("Ctrl+Click", "Match the CAD edge instead"),
-            ("X", "Delete the patch (re-edit only)"),
-            ("Right click", "Commit"),
-            ("Enter", "Commit"),
-            ("Esc", "Clear typing, then discard"),
-        ]),
-        ("Anytime", [
-            ("Slash", "Isolate, retopology included"),
-            ("Alt+X", "Retopo through meshes on/off"),
-            ("E", "Plasticity edges on/off"),
-            ("Ctrl+E", "Surface flow on/off"),
-        ]),
-    ):
-        body.label(text=phase_label + ":")
-        for key, action in binds:
-            row = body.row()
-            row.label(text=f"      {key}")
-            row.label(text=action)
-        body.separator()
+def _draw_tab_keys(
+    layout: bpy.types.UILayout, state: "state_mod.RetopPatchState"
+) -> None:
+    """Where the keys are, not the keys themselves.
+
+    The keys are real KeyMapItems, so the widget that edits them already exists: Blender's
+    own rows, on the addon's preferences page. This tab points at it and then
+    lists only what is *not* remappable, which is the part no editor would
+    show.
+    """
+    box = layout.box().column(align=True)
+    box.label(text="Keybinds", icon='EVENT_A')
+    box.separator()
+    box.operator("retop.open_keymap_prefs", text="Edit Keybinds…",
+                 icon='PREFERENCES')
+    box.label(text="Also: Preferences > Keymap > Add-ons")
 
 
 def _draw_tab_system(layout: bpy.types.UILayout) -> None:
@@ -585,9 +675,9 @@ class VIEW3D_PT_retop(bpy.types.Panel):
         elif tab == 'DISPLAY':
             _draw_tab_display(layout, state, obj)
         elif tab == 'OUTPUT':
-            _draw_tab_output(layout, state)
+            _draw_tab_output(layout, context, state)
         elif tab == 'KEYS':
-            _draw_tab_keys(layout)
+            _draw_tab_keys(layout, state)
         elif tab == 'SYSTEM':
             _draw_tab_system(layout)
 

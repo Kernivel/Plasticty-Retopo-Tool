@@ -108,9 +108,9 @@ check("with no preview there are no vertex coords",
 check("and with no active patch, no side references to draw",
       pr.sidematch.active_sides() == [])
 
-overlay.typed_span = "12"
+bpy.context.scene.plasticity_retop.typed_span = "12"
 check("_draw survives a half-typed span", call(overlay._draw, "_draw"))
-overlay.typed_span = ""
+bpy.context.scene.plasticity_retop.typed_span = ""
 overlay.disable()
 
 

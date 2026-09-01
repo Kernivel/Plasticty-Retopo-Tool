@@ -26,6 +26,13 @@ The visual "push off the surface" used to see the preview clearly is done
 with a non-destructive Displace modifier on the preview object, not baked
 into its mesh data -- so Commit (which reads the preview's base mesh, not
 its modifier-evaluated geometry) always bakes the true, un-offset position.
+
+Preview and result are lifted by the *same* measure (result_lift), the
+preview by a little more (PREVIEW_LIFT_RATIO). They are always seen
+together -- side by side across a shared boundary, and stacked while a
+committed patch is hovered before the click that removes its faces -- so
+the preview sitting on the surface while the result floated above it read
+as the committed blue patch swallowing the orange one being built.
 """
 import bpy
 import bmesh
@@ -52,6 +59,14 @@ RESULT_NAME_SUFFIX = "_Retop"
 OFFSET_MODIFIER_NAME = "RetopPreviewOffset"
 RESULT_OFFSET_MODIFIER_NAME = "RetopResultOffset"
 AUTO_OFFSET_RATIO = 0.001  # of the source object's bounding-box diagonal
+# The preview is lifted off the CAD surface by the *result* offset times this,
+# so the patch being built always draws above the committed patches around it
+# instead of fighting them (see preview_lift).
+PREVIEW_LIFT_RATIO = 1.5
+# Custom property naming the source object a preview was built from, so its
+# lift can be derived from the same object the result offset uses even when
+# no session is running.
+PREVIEW_SOURCE_PROP = "retop_preview_source"
 PREVIEW_MATERIAL_NAME = "RetopPreviewMaterial"
 RESULT_MATERIAL_NAME = "RetopResultMaterial"
 RESULT_DIM_MATERIAL_NAME = "RetopResultMaterialDim"
@@ -354,6 +369,139 @@ def adopt_untracked_faces(source_obj: bpy.types.Object) -> int:
     print(f"[Plasticity Retop] Adopted {adopted} pre-existing face(s) of "
           f"'{result_obj.name}' into patch tracking")
     return adopted
+
+
+# --- putting the bookkeeping back after a hand edit ---
+#
+# `tweak.py` hands the result mesh to Blender's Edit Mode so a failed match can
+# be fixed with the knife, a vertex drag and auto-merge. Blender knows nothing
+# about this addon's attributes, and the two it gets wrong are the two that are
+# read back later:
+#
+# - a face the knife created carries NO_PATCH, so the patch it belongs to reads
+#   as partly "never retopped" and a re-edit builds a second grid over it;
+# - a vertex the knife created inherits its neighbours' `retop_source_vid`,
+#   i.e. it claims to *be* a CAD corner it is nowhere near. Corner welding is
+#   by identity, so the next commit touching that corner would either drag the
+#   new vertex onto it or reuse it in the corner's place.
+#
+# Faces are handled by `adopt_untracked_faces`, which already classifies an
+# untagged face onto the patch it sits on and refuses to guess without a strict
+# majority. Vertex ids are handled below, and the rule is deliberately not "is
+# this vertex where the corner is" alone: a *deliberate* nudge of a corner is
+# exactly what this mode exists for, and stripping its identity for having
+# moved a hair would undo the fix on the next commit.
+
+# A vertex farther than this share of the model's bounding-box diagonal from
+# the CAD corner it names cannot be that corner, however it came by the id.
+# Generous on purpose: a hand-nudged corner stays itself, a knife-created
+# vertex a cell away does not.
+STRAY_SOURCE_ID_RATIO = 0.01
+
+
+def _bbox_diagonal(obj: bpy.types.Object) -> float:
+    corners = [mathutils.Vector(c) for c in obj.bound_box]
+    if not corners:
+        return 0.0
+    lo = mathutils.Vector((min(c[i] for c in corners) for i in range(3)))
+    hi = mathutils.Vector((max(c[i] for c in corners) for i in range(3)))
+    return (hi - lo).length
+
+
+def clear_stray_source_ids(
+    context: bpy.types.Context,
+    source_obj: bpy.types.Object,
+    result_obj: bpy.types.Object,
+) -> int:
+    """Drop `retop_source_vid` from result vertices that cannot own it, and
+    return how many were cleared.
+
+    Three ways a vertex loses the claim, in order of how sure we are:
+
+    1. the id is out of range for the source mesh -- an interpolated int
+       between two real ids, which is not an index at all;
+    2. it is far from the source vertex it names (see STRAY_SOURCE_ID_RATIO);
+    3. another vertex names the same source vertex and sits closer. An id is
+       one CAD corner and one result vertex; the nearer one keeps it.
+
+    Clearing is always the safe direction: a vertex with no id welds by
+    *proximity* like every other boundary point, which is what a hand-placed
+    vertex should do anyway.
+    """
+    mesh = result_obj.data
+    attr = mesh.attributes.get(SOURCE_VID_ATTR)
+    if attr is None or len(mesh.vertices) == 0:
+        return 0
+
+    vids = [NO_SOURCE] * len(mesh.vertices)
+    attr.data.foreach_get("value", vids)
+
+    src_mesh = source_obj.data
+    source_count = len(src_mesh.vertices)
+    src_matrix = source_obj.matrix_world
+    result_matrix = result_obj.matrix_world
+
+    state = context.scene.plasticity_retop
+    weld = state_mod.to_blender_units(state, state.boundary_weld_distance)
+    limit = max(weld, _bbox_diagonal(source_obj) * STRAY_SOURCE_ID_RATIO, 1e-6)
+
+    # (1) and (2), collecting distances for (3) as we go.
+    cleared = 0
+    claims: dict[int, tuple[int, float]] = {}  # source id -> (vertex, distance)
+    for index, sid in enumerate(vids):
+        if sid == NO_SOURCE:
+            continue
+        if not 0 <= sid < source_count:
+            vids[index] = NO_SOURCE
+            cleared += 1
+            continue
+        world = result_matrix @ mesh.vertices[index].co
+        distance = (src_matrix @ src_mesh.vertices[sid].co - world).length
+        if distance > limit:
+            vids[index] = NO_SOURCE
+            cleared += 1
+            continue
+        best = claims.get(sid)
+        if best is None or distance < best[1]:
+            if best is not None:
+                vids[best[0]] = NO_SOURCE
+                cleared += 1
+            claims[sid] = (index, distance)
+        else:
+            vids[index] = NO_SOURCE
+            cleared += 1
+
+    if cleared:
+        attr.data.foreach_set("value", vids)
+        mesh.update()
+    return cleared
+
+
+def repair_manual_edits(
+    context: bpy.types.Context, source_obj: bpy.types.Object
+) -> tuple[int, int]:
+    """Reconcile `<Source>_Retop` with the addon after it was hand-edited in
+    Blender's Edit Mode. Returns (faces adopted, source ids cleared).
+
+    Called on the way out of the tweak round trip -- once per trip, whichever
+    way it ended. Everything here writes mesh attributes only, so it is safe
+    from the modal; the session pushes one undo step around it.
+    """
+    result_obj = bpy.data.objects.get(result_object_name_for(source_obj))
+    if result_obj is None:
+        return 0, 0
+
+    cleared = clear_stray_source_ids(context, source_obj, result_obj)
+    # Faces the knife or a manual add left untagged. adopt_untracked_faces
+    # already returns early when every face carries an id, so a trip that only
+    # moved vertices costs one attribute read.
+    adopted = adopt_untracked_faces(source_obj)
+    # A crease is a property of the border *between* patches, and a hand edit
+    # can move one: re-derive them rather than leave the old ones.
+    apply_result_shading(context, result_obj)
+    # Every side match reads from this, and the vertices it caches have moved.
+    invalidate_boundary_cache()
+    return adopted, cleared
 
 
 # --- taking a patch out for a re-edit, reversibly ---
@@ -767,6 +915,193 @@ def _apply_offset_modifier(obj: bpy.types.Object, offset: float) -> None:
     mod.strength = offset
 
 
+# --- symmetry -----------------------------------------------------------
+#
+# Retopping half a symmetric part and mirroring the rest is most of the saving
+# on a symmetric model, so this is a Mirror *modifier* on the result object and
+# not baked geometry. That is not just non-destructiveness: every piece of this
+# addon's bookkeeping reads the result mesh's **base** data -- commit and
+# re-edit (PATCH_ID_ATTR), neighbour matching (committed_boundary_map), shading
+# (apply_result_shading), adoption -- so a modifier is invisible to all of it by
+# construction. Baked mirror faces would carry the same patch ids as the
+# originals, and re-editing a patch would delete both halves and rebuild one.
+#
+# The plane is the **source object's** origin and axes (`mirror_object`), not
+# the result object's. Plasticity currently drops every import at the world
+# origin so the two coincide, but that is a fact about today's bridge rather
+# than something to depend on, and the source object is what the user means by
+# "the object".
+MIRROR_MODIFIER_NAME = "RetopMirror"
+MIRROR_AXES = ('X', 'Y', 'Z')
+
+
+def mirror_target(
+    context: bpy.types.Context, obj: bpy.types.Object | None = None
+) -> tuple[bpy.types.Object | None, bpy.types.Object | None]:
+    """(source, result) the mirror applies to, or (None, None).
+
+    Resolved from the running session first, then from `obj` (defaulting to the
+    active object) through `source_object_for_result`, so pointing at either
+    half of the pair -- the CAD object or its retopology -- works. A source with
+    no result mesh yet has nothing to mirror and comes back as (source, None).
+    """
+    state = context.scene.plasticity_retop
+    source = None
+    if state.session_active and state.session_object_name:
+        source = bpy.data.objects.get(state.session_object_name)
+    if source is None:
+        candidate = obj if obj is not None else context.active_object
+        if candidate is not None and candidate.type == 'MESH':
+            source = source_object_for_result(candidate) or candidate
+    if source is None:
+        return None, None
+    return source, bpy.data.objects.get(result_object_name_for(source))
+
+
+def mirror_axes(result_obj: bpy.types.Object | None) -> tuple[bool, bool, bool]:
+    """Which axes the result mesh is currently mirrored on.
+
+    Read off the modifier rather than a scene property: the axes belong to one
+    object, and two objects being retopped in the same file have no reason to
+    agree on them.
+    """
+    if result_obj is None:
+        return (False, False, False)
+    mod = result_obj.modifiers.get(MIRROR_MODIFIER_NAME)
+    if mod is None:
+        return (False, False, False)
+    return tuple(bool(a) for a in mod.use_axis)
+
+
+def apply_mirror_settings(context: bpy.types.Context) -> None:
+    """Push the panel's clip/merge settings onto every existing mirror.
+
+    Called from the property callbacks, so it must not create anything: an
+    object with no mirror on it stays without one.
+    """
+    state = context.scene.plasticity_retop
+    merge = state_mod.to_blender_units(state, state.mirror_merge_distance)
+    for result_obj in iter_result_objects(context):
+        mod = result_obj.modifiers.get(MIRROR_MODIFIER_NAME)
+        if mod is None:
+            continue
+        mod.use_clip = state.mirror_clip
+        mod.use_mirror_merge = merge > 0.0
+        mod.merge_threshold = max(merge, 1e-6)
+
+
+def set_mirror_axes(
+    context: bpy.types.Context,
+    source_obj: bpy.types.Object,
+    result_obj: bpy.types.Object,
+    axes: tuple[bool, bool, bool],
+) -> tuple[bool, bool, bool]:
+    """Mirror `result_obj` on `axes`, removing the modifier when none are left.
+
+    A modifier is not an ID, so this is safe outside an undo step and from a
+    property callback -- the same reason `_apply_offset_modifier` can be.
+    """
+    mod = result_obj.modifiers.get(MIRROR_MODIFIER_NAME)
+    if not any(axes):
+        if mod is not None:
+            result_obj.modifiers.remove(mod)
+        return (False, False, False)
+
+    state = context.scene.plasticity_retop
+    if mod is None:
+        mod = result_obj.modifiers.new(MIRROR_MODIFIER_NAME, 'MIRROR')
+        # Ahead of the cosmetic offset, so the stack reads as "the mesh, then
+        # how it is drawn". Visually either order works -- the Displace is
+        # along normals and the mirror flips them with the geometry -- but a
+        # reader should not have to work that out.
+        if result_obj.modifiers.find(MIRROR_MODIFIER_NAME) > 0:
+            result_obj.modifiers.move(
+                result_obj.modifiers.find(MIRROR_MODIFIER_NAME), 0)
+
+    # The source object's origin and axes are the plane, not the result's.
+    mod.mirror_object = source_obj
+    mod.use_axis = axes
+    merge = state_mod.to_blender_units(state, state.mirror_merge_distance)
+    mod.use_clip = state.mirror_clip
+    mod.use_mirror_merge = merge > 0.0
+    mod.merge_threshold = max(merge, 1e-6)
+    return tuple(bool(a) for a in mod.use_axis)
+
+
+def toggle_mirror_axis(
+    context: bpy.types.Context,
+    source_obj: bpy.types.Object,
+    result_obj: bpy.types.Object,
+    axis: str,
+) -> tuple[bool, bool, bool]:
+    """Flip one axis of the mirror and return the axes that are on afterwards."""
+    index = MIRROR_AXES.index(axis)
+    axes = list(mirror_axes(result_obj))
+    axes[index] = not axes[index]
+    return set_mirror_axes(context, source_obj, result_obj, tuple(axes))
+
+
+def bake_mirror(
+    context: bpy.types.Context, result_obj: bpy.types.Object
+) -> tuple[int, str | None]:
+    """Apply the mirror into real geometry. Returns (faces added, error).
+
+    The mirrored faces are stamped NO_PATCH on the way out, and that is the
+    whole reason this is an operator rather than a note telling you to use the
+    modifier dropdown. A mirrored face inherits the patch id of the face it
+    was copied from, and `remove_patch_from_result` deletes *every* face
+    carrying the id being re-edited -- so re-editing one patch after a plain
+    apply would take both halves out and rebuild only one, tearing a hole in
+    the mirrored side that nothing would ever put back.
+
+    Untracked is the right resting state for them: unclaimed faces are never
+    deleted, and `adopt_untracked_faces` will hand each one to the Plasticity
+    face it actually sits on the next time the object is entered -- which, on
+    the symmetric part this was used for, is the real face on the other side.
+    """
+    mod = result_obj.modifiers.get(MIRROR_MODIFIER_NAME)
+    if mod is None:
+        return 0, "Nothing to apply: this retopology has no mirror"
+    if context.mode != 'OBJECT':
+        return 0, "Leave Edit Mode first"
+
+    mesh = result_obj.data
+    # Face centres before the apply, so the copies can be told from the
+    # originals afterwards without assuming anything about the order Blender
+    # emits them in. The originals come through untouched, so they match
+    # exactly; a rounded key is only insurance against float noise.
+    def key(centre: mathutils.Vector) -> tuple[int, int, int]:
+        return tuple(round(c * 1e5) for c in centre)
+
+    before = {}
+    ids = _patch_ids_of_faces(mesh) or [NO_PATCH] * len(mesh.polygons)
+    for poly in mesh.polygons:
+        before[key(poly.center)] = ids[poly.index]
+    faces_before = len(mesh.polygons)
+
+    previous_active = context.view_layer.objects.active
+    context.view_layer.objects.active = result_obj
+    try:
+        bpy.ops.object.modifier_apply(modifier=MIRROR_MODIFIER_NAME)
+    except RuntimeError as exc:
+        return 0, f"Could not apply the mirror: {exc}"
+    finally:
+        if previous_active is not None:
+            context.view_layer.objects.active = previous_active
+
+    mesh = result_obj.data
+    attr = mesh.attributes.get(PATCH_ID_ATTR)
+    if attr is None:
+        attr = mesh.attributes.new(PATCH_ID_ATTR, 'INT', 'FACE')
+    values = [before.get(key(poly.center), NO_PATCH) for poly in mesh.polygons]
+    attr.data.foreach_set("value", values)
+    mesh.update()
+
+    apply_result_shading(context, result_obj)
+    invalidate_boundary_cache()
+    return len(mesh.polygons) - faces_before, None
+
+
 def refresh_preview_appearance(context: bpy.types.Context) -> None:
     """Re-apply color/alpha/offset settings to the current preview object
     without touching its geometry -- cheap, called from property callbacks.
@@ -779,7 +1114,12 @@ def refresh_preview_appearance(context: bpy.types.Context) -> None:
     if mat is not None:
         _apply_material_appearance(mat, tuple(state.preview_color), state.preview_alpha)
     obj.color = (*state.preview_color, state.preview_alpha)
-    _apply_offset_modifier(obj, state.preview_offset)
+    _apply_offset_modifier(obj, preview_lift(context))
+    # Same question as the result: draw over the scene, or be occluded like
+    # any other object. Alt+X answers it for both, or the preview would keep
+    # floating in front while the retopology it belongs to is being checked
+    # against the surface.
+    obj.show_in_front = state.result_see_through
 
 
 def ensure_result_object(
@@ -834,6 +1174,56 @@ def _auto_offset_for(source_obj: bpy.types.Object | None) -> float:
     return diagonal * AUTO_OFFSET_RATIO
 
 
+def result_lift(
+    context: bpy.types.Context, source_obj: bpy.types.Object | None
+) -> float:
+    """How far the committed retopology of `source_obj` is pushed off the CAD
+    surface, in Blender units: the explicit Result Offset, or the automatic
+    one derived from the object's size.
+
+    One function, because the preview has to be lifted by the same measure:
+    the two are shown side by side along a shared boundary, and an offset the
+    preview doesn't know about is exactly what makes a committed neighbour
+    swallow the patch being built.
+    """
+    state = context.scene.plasticity_retop
+    offset = state_mod.to_blender_units(state, state.result_offset)
+    if offset <= 0.0:
+        offset = _auto_offset_for(source_obj)
+    return offset
+
+
+def preview_lift(context: bpy.types.Context) -> float:
+    """How far the *preview* is pushed off the surface.
+
+    The result offset times PREVIEW_LIFT_RATIO, plus whatever Preview Offset
+    adds on top. Strictly more than the result, never less: the patch being
+    built (or re-edited, where the hover draws it straight over the committed
+    faces before the click removes them) must read as the thing in front, and
+    two coplanar surfaces z-fight into a stipple that says nothing.
+    The margin is a fraction of an offset that is itself 0.1% of the model, so
+    the seam with a committed neighbour stays visually flush.
+    """
+    state = context.scene.plasticity_retop
+    # Through to_blender_units, like every other distance in the panel -- and
+    # like the Result Offset this is added to. Without it the two sliders sat
+    # on scales a thousand apart in millimetres: one whole unit of Extra Offset
+    # was a metre, i.e. hundreds of times the offset it was meant to nudge, so
+    # the smallest usable drag threw the preview off the model entirely.
+    extra = state_mod.to_blender_units(state, state.preview_offset)
+    return result_lift(context, preview_source_object()) * PREVIEW_LIFT_RATIO + extra
+
+
+def preview_source_object() -> bpy.types.Object | None:
+    """The CAD object the current preview belongs to. Stamped on the preview
+    at generation time, so the lift is right even outside a session.
+    """
+    obj = bpy.data.objects.get(PREVIEW_OBJ_NAME)
+    if obj is None:
+        return None
+    return bpy.data.objects.get(obj.get(PREVIEW_SOURCE_PROP, ""))
+
+
 def _apply_result_offset(
     context: bpy.types.Context, result_obj: bpy.types.Object
 ) -> None:
@@ -842,10 +1232,7 @@ def _apply_result_offset(
     show_render=False, so the geometry that actually gets rendered/exported is
     the true, un-offset one sitting exactly on the surface.
     """
-    state = context.scene.plasticity_retop
-    offset = state_mod.to_blender_units(state, state.result_offset)
-    if offset <= 0.0:
-        offset = _auto_offset_for(source_object_for_result(result_obj))
+    offset = result_lift(context, source_object_for_result(result_obj))
 
     mod = result_obj.modifiers.get(RESULT_OFFSET_MODIFIER_NAME)
     if offset <= 0.0:
@@ -966,6 +1353,10 @@ def refresh_result_appearance(context: bpy.types.Context) -> None:
         else:
             _resting_result_appearance(result_obj, color)
 
+    # The preview's lift and see-through are derived from these same settings,
+    # so it has to follow them: a Result Offset changed mid-session would
+    # otherwise leave the patch being built sunk into its committed neighbours.
+    refresh_preview_appearance(context)
     apply_wireframe_opacity(context)
 
 
@@ -1049,10 +1440,11 @@ def update_preview_object(
 
     obj.matrix_world = source_obj.matrix_world.copy()
     obj.hide_render = True
-    # Draw as an overlay on top of the (possibly occluding) source CAD mesh,
-    # with its wireframe visible, so the grid being built is easy to read
-    # while tweaking spans.
-    obj.show_in_front = True
+    obj[PREVIEW_SOURCE_PROP] = source_obj.name
+    # Drawn with its wireframe visible, so the grid being built is easy to
+    # read while tweaking spans; show_in_front and the lift off the surface
+    # are set by refresh_preview_appearance, from the same settings the
+    # committed result follows.
     obj.show_wire = True
     obj.show_all_edges = True
 

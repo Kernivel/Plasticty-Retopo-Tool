@@ -196,18 +196,41 @@ check("editing a patch outside a session leaves the result resting",
       f"show_in_front={result_obj_mid_edit.show_in_front if result_obj_mid_edit else 'N/A'}")
 
 # --- cosmetic offset must be a non-destructive modifier, never baked into
-# the committed geometry. ---
-state.preview_offset = 0.5
+# the committed geometry -- and the preview must sit *above* the committed
+# result, not on the surface underneath it. ---
 preview_obj = bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME)
+base_lift = (pr.mesh_build.result_lift(bpy.context, obj)
+             * pr.mesh_build.PREVIEW_LIFT_RATIO)
+check("the preview is lifted further than the committed result",
+      base_lift > pr.mesh_build.result_lift(bpy.context, obj) > 0.0,
+      f"preview={base_lift}, result={pr.mesh_build.result_lift(bpy.context, obj)}")
+check("the preview knows which source object it belongs to",
+      pr.mesh_build.preview_source_object() is obj,
+      str(pr.mesh_build.preview_source_object()))
+
+state.preview_offset = 0.5
 mod = preview_obj.modifiers.get(pr.mesh_build.OFFSET_MODIFIER_NAME) if preview_obj else None
-check("offset modifier added with correct strength",
-      mod is not None and abs(mod.strength - 0.5) < 1e-6,
-      f"mod={mod}, strength={mod.strength if mod else 'N/A'}")
+check("Preview Offset adds on top of the shared lift",
+      mod is not None and abs(mod.strength - (base_lift + 0.5)) < 1e-6,
+      f"mod={mod}, strength={mod.strength if mod else 'N/A'}, base={base_lift}")
 
 apex_local_before = preview_obj.data.vertices[-1].co.copy()  # base mesh, unaffected by the modifier
 state.preview_offset = 0.0
 mod_after = preview_obj.modifiers.get(pr.mesh_build.OFFSET_MODIFIER_NAME)
-check("offset modifier removed when offset is 0", mod_after is None)
+check("with no extra offset the preview still keeps the result's lift",
+      mod_after is not None and abs(mod_after.strength - base_lift) < 1e-6,
+      f"strength={mod_after.strength if mod_after else 'N/A'}, base={base_lift}")
+
+# --- Alt+X is one answer for both meshes: a preview drawn in front while the
+# result is being checked against the surface is the same confusion again. ---
+state.result_see_through = False
+pr.mesh_build.refresh_result_appearance(bpy.context)
+check("the preview follows See Retopo Through Meshes",
+      preview_obj.show_in_front is False, f"show_in_front={preview_obj.show_in_front}")
+state.result_see_through = True
+pr.mesh_build.refresh_result_appearance(bpy.context)
+check("the preview is drawn in front again when see-through is back on",
+      preview_obj.show_in_front is True, f"show_in_front={preview_obj.show_in_front}")
 
 res = bpy.ops.retop.commit_patch()
 check("commit_patch (B) FINISHED", res == {'FINISHED'}, str(res))
@@ -474,18 +497,38 @@ state.generator_name = "Triangle"
 check("wheel drives the single span on a triangle",
       pr.operators.active_span_prop(state) == "span", pr.operators.active_span_prop(state))
 
+def _poll_without_session():
+    """Whether the span key would fire with no session running.
+
+    It must not: every session key is a KeyMapItem in the 3D View keymap, so it
+    is offered whether a session exists or not and the poll is the only thing
+    standing between a stray Ctrl+wheel and a span nobody is adjusting.
+    """
+    was_active = state.session_active
+    state.session_active = False
+    try:
+        return bpy.ops.retop.nudge_span.poll()
+    finally:
+        state.session_active = was_active
+
+
 # Nudging must go through the property (so the live-update callback fires) and
 # never fall below 1.
 state.generator_name = "Quad"
 state.span_axis = 'U'
 state.span_u = 3
-_nudge = pr.operators.RETOP_OT_session._nudge_span
-_nudge(None, bpy.context, +2)
-check("scroll up raises the active span", state.span_u == 5, state.span_u)
-_nudge(None, bpy.context, -10)
-check("scroll down clamps the span at 1", state.span_u == 1, state.span_u)
-
+# Through the operator: Ctrl+wheel is a real KeyMapItem on retop.nudge_span
+# now, and its poll wants a live session in the ADJUST phase.
+state.session_active = True
 state.session_phase = 'ADJUST'
+bpy.ops.retop.nudge_span(delta=2)
+check("scroll up raises the active span", state.span_u == 5, state.span_u)
+for _ in range(10):
+    bpy.ops.retop.nudge_span(delta=-1)
+check("scroll down clamps the span at 1", state.span_u == 1, state.span_u)
+check("and the key is refused outside a session",
+      not _poll_without_session(), "nudge_span should need a session")
+
 adjust_keys = [k for k, _a in pr.overlay.keybinds_for(state)]
 check("adjust overlay lists the Plasticity-style binds",
       "Ctrl+Scroll" in adjust_keys and "Tab" in adjust_keys and "R-Click" in adjust_keys,
@@ -497,9 +540,18 @@ check("Tab hint is hidden for non-quad patches (single span)",
 state.session_phase = 'PATCH'
 # Alt+X and E ride along in every phase. Alt+X answers "is the retopology where
 # I think it is"; E draws the Plasticity edges, which is read while *choosing* a
-# surface as much as while adjusting one.
+# surface as much as while adjusting one. Ctrl+Z is Blender's own, advertised
+# only here: one undo step is one committed patch, so this is the phase where
+# it means "take the last patch back" -- but it is deliberately *not* listed:
+# it is Blender's own key, reaching for it is automatic, and the hint line is
+# short enough that every entry has to earn its width. Tab is here and only
+# here: it opens the hand-edit round trip into Blender's Edit Mode, which a
+# patch open for adjustment must not do (its faces are out of the result mesh
+# with only a snapshot to put them back, and Edit Mode discards writes to it on
+# exit).
 check("patch phase overlay shows its own binds",
-      [k for k, _a in pr.overlay.keybinds_for(state)] == ["Click", "E", "Alt+X", "Esc"],
+      [k for k, _a in pr.overlay.keybinds_for(state)]
+      == ["Click", "Tab", "Alt+X", "E", "Shift+X", "Esc"],
       str(pr.overlay.keybinds_for(state)))
 
 # ---------------------------------------------------------------------------
@@ -509,11 +561,10 @@ _session_cls = pr.operators.RETOP_OT_session
 
 
 class _TypingSelf:
-    _typed = ""
-
-    def _set_typed(self, value):
-        self._typed = value
-
+    # The buffer lives on the scene now (state.typed_span), because the keys
+    # that clear it are real operators and an operator cannot reach the running
+    # modal. Only the digits themselves are still the modal's.
+    _set_typed = _session_cls._set_typed
     _flush_typed_span = _session_cls._flush_typed_span
     _handle_typed_digit = _session_cls._handle_typed_digit
 

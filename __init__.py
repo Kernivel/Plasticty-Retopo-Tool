@@ -19,18 +19,26 @@ from . import state
 from . import mesh_build
 from . import patchprep
 from . import sidematch
+from . import keymap
+from . import tweak
 from . import overlay
 from . import operators
+from . import prefs
 from . import ui
 
 
 def register() -> None:
     state.register()
     operators.register()
+    # After the operators: the preferences page draws the keymap items they
+    # registered, and an AddonPreferences whose draw finds nothing is a blank
+    # page with no explanation.
+    prefs.register()
     ui.register()
 
 
 def unregister() -> None:
     ui.unregister()
+    prefs.unregister()
     operators.unregister()
     state.unregister()

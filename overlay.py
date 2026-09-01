@@ -24,6 +24,7 @@ from gpu_extras.batch import batch_for_shader
 # none imports it back. operators is the one that can't be reached from here.
 from . import cad_display
 from . import constants
+from . import keymap
 from . import mesh_build
 from . import sidematch
 
@@ -109,9 +110,9 @@ TYPED_COLOR = (1.0, 0.72, 0.25, 1.0)
 # the operators module, which imports this one back.
 TWO_SPAN_GENERATOR_NAMES = constants.TWO_SPAN_GENERATORS
 
-# Set by the session modal while digits are being typed, so the overlay can
-# echo them back like Blender's own numeric input.
-typed_span: str = ""
+# The digits being typed are echoed from `state.typed_span`, not a module
+# global: the keys that clear it (U/V, N-gon, the span wheel) are real
+# operators now, and an operator cannot reach the running modal's attributes.
 
 # Set by the session modal when the patch under the cursor has already been
 # committed, so the hint reads "Re-edit patch" -- clicking it reopens it with
@@ -122,30 +123,73 @@ hover_committed: bool = False
 def keybinds_for(
     state: "state_mod.RetopPatchState",
 ) -> list[list[tuple[str, str]]]:
-    """[(key, action), ...] for the session's current phase, bottom line last."""
+    """[(key, action), ...] for the session's current phase, bottom line last.
+
+    Every key here is looked up in the keymap table rather than written out, so
+    a remapped binding changes the hint with it. A hint line that says `E` when
+    the key is now `Ctrl+E` is worse than no hint line at all -- it is the one
+    place a user checks before deciding the feature is broken.
+    """
     phase = state.session_phase
-    # Alt+X is offered in every phase: it is the binding that answers "is the
-    # retopology where I think it is", and that comes up at any point.
-    see_through = ("Alt+X", "Retopo X-Ray: "
-                            + ("on" if getattr(state, "result_see_through", True) else "off"))
-    # Same reasoning: the CAD structure is read in every phase, and most of all
-    # while deciding which surface to pick next.
-    cad_edges = ("E", "Plasticity edges: "
-                      + ("on" if getattr(state, "show_cad_edges", False) else "off"))
+
+    def key(action_id: str) -> str:
+        # Read off the live KeyMapItem, so a remapped key changes the hint with
+        # it. A hint that says `E` when the key is now `Ctrl+E` is worse than
+        # no hint at all -- it is the one place a user checks before deciding
+        # the feature is broken.
+        return keymap.describe(action_id)
+
+    # The retopo x-ray is offered in every phase: it is the binding that
+    # answers "is the retopology where I think it is", and that comes up at any
+    # point. It sits on Shift+X because Alt+X now belongs to the mirror -- the
+    # Hard Ops reflex.
+    see_through = (key("see_through"), "Retopo X-Ray: "
+                   + ("on" if getattr(state, "result_see_through", True) else "off"))
+    # Which axes are currently mirrored lives on the modifier, not in state,
+    # and a draw handler has no business reaching for an object to find out --
+    # so the hint names the key and the panel names the state.
+    mirror = (key("mirror"), "Mirror X/Y/Z")
+    # Same reasoning as the x-ray: the CAD structure is read in every phase,
+    # and most of all while deciding which surface to pick next.
+    cad_edges = (key("cad_edges"), "Plasticity edges: "
+                 + ("on" if getattr(state, "show_cad_edges", False) else "off"))
 
     if phase == 'OBJECT':
         return [
             ("Click", "Enter object"),
             cad_edges,
             see_through,
-            ("Esc", "End session"),
+            (key("back"), "End session"),
         ]
+    if phase == 'TWEAK':
+        # Blender's keys, not ours: the session is only holding the door open.
+        # Listed anyway because the whole point of the round trip is that you
+        # do not have to remember which mode you are in to fix a seam.
+        return [
+            ("K", "Knife"),
+            ("Ctrl+R", "Loop cut"),
+            ("J", "Connect vertices"),
+            ("G", "Move (snapped, auto-merge)"),
+            ("M", "Merge by distance"),
+            # Blender's own Tab, not the table's: the modal consumes it in this
+            # phase whatever hand_edit is bound to, because getting *out* of a
+            # mode Blender put you in has to be the key Blender uses.
+            ("Tab", "Back to Retop"),
+        ]
+
     if phase == 'PATCH':
         return [
             ("Click", "Re-edit patch" if hover_committed else "Pick surface"),
+            (key("hand_edit"), "Hand-edit mesh"),
+            # Ctrl+Z is deliberately *not* listed. It is Blender's own key and
+            # reaching for it is automatic; what the session does is make one
+            # step mean one committed patch, which is a property of the undo
+            # stack rather than a binding to advertise. The line is short and
+            # every entry on it has to earn its width.
+            mirror,
             cad_edges,
             see_through,
-            ("Esc", "Leave object"),
+            (key("back"), "Leave object"),
         ]
 
     # ADJUST
@@ -155,33 +199,60 @@ def keybinds_for(
 
     # N-gon mode has no spans at all, so advertising span keys there would be
     # advertising keys that do nothing.
+    # The two span keys are one hint, since they are a pair and the line has no
+    # room for both -- "Ctrl+Wheel Up/Down" collapses to "Ctrl+Scroll" whenever
+    # they really are the two directions of one wheel, and spells both out when
+    # somebody has bound them to something else.
+    span_key = _pair_label("span_more", "span_less")
     if getattr(state, "ngon_mode", False):
         binds = [
-            ("Ctrl+Scroll", "Detail +/-"),
-            ("N", "Back to grid"),
+            (span_key, "Detail +/-"),
+            (key("ngon_mode"), "Back to grid"),
         ]
     else:
         binds = [
-            ("Ctrl+Scroll", "Span +/-"),
+            (span_key, "Span +/-"),
             ("0-9", "Type span"),
         ]
         if state.generator_name in TWO_SPAN_GENERATOR_NAMES:
-            binds.append(("Tab", f"U/V direction (now {state.span_axis})"))
-        binds.append(("N", "N-gon (flat faces)"))
+            binds.append((key("span_axis"), f"U/V direction (now {state.span_axis})"))
+        binds.append((key("ngon_mode"), "N-gon (flat faces)"))
     if getattr(state, "editing_committed", False):
-        binds.append(("X", "Delete patch"))
+        binds.append((key("delete_patch"), "Delete patch"))
     binds.append(cad_edges)
     binds.append(see_through)
-    binds.append(("M", "Side highlight: "
-                       + ("on" if getattr(state, "match_mode", True) else "off")))
+    binds.append((key("match_mode"), "Side highlight: "
+                  + ("on" if getattr(state, "match_mode", True) else "off")))
     binds.extend([
-        ("Click", "Match a side, else " + commit_label.lower()),
-        ("Ctrl+Click", "Match the CAD edge"),
-        ("R-Click", commit_label),
-        ("Enter", commit_label),
-        ("Esc", "Discard"),
+        (key("pin_neighbour"), "Match a side, else " + commit_label.lower()),
+        (key("pin_source"), "Match the CAD edge"),
     ])
+    # Every way of committing, not just the first: right-click and Enter are
+    # both worth knowing (the right-click is the Plasticity-style affordance
+    # people arrive expecting), and this is the one action where the second
+    # binding is as much a habit as the first.
+    for label in keymap.describe_all("commit"):
+        binds.append((label, commit_label))
+    binds.append((key("back"), "Discard"))
     return binds
+
+
+def _pair_label(up_action: str, down_action: str) -> str:
+    """One label for two opposite actions, e.g. "Ctrl+Scroll" for a wheel pair.
+
+    They are always used together and the hint line is one row across the
+    bottom of the screen, so spending two entries on "more" and "less" costs
+    more than it says. Collapsed only when they really are the two directions
+    of one wheel with the same modifiers; anything else is spelled out, because
+    a user who moved one of them needs to see what they moved it to.
+    """
+    up = keymap.describe(up_action)
+    down = keymap.describe(down_action)
+    up_key, _, up_rest = up.rpartition("+")
+    down_key, _, down_rest = down.rpartition("+")
+    if up_key == down_key and {up_rest, down_rest} == {"Wheel Up", "Wheel Down"}:
+        return f"{up_key}+Scroll" if up_key else "Scroll"
+    return f"{up} / {down}"
 
 
 def _set_font_size(font_id: int, size: float) -> None:
@@ -278,8 +349,9 @@ def _draw() -> None:
 
             x += key_box_w + key_gap + action_w + item_gap
 
-    if typed_span and state.session_phase == 'ADJUST':
-        label = f"Span: {typed_span}_"
+    typed = getattr(state, "typed_span", "")
+    if typed and state.session_phase == 'ADJUST':
+        label = f"Span: {typed}_"
         label_w, _label_h = blf.dimensions(font_id, label)
         blf.color(font_id, *TYPED_COLOR)
         blf.position(font_id, (region.width - label_w) * 0.5,
@@ -471,6 +543,37 @@ def _draw_line_batch(
     batch_for_shader(shader, 'LINES', {"pos": points}).draw(shader)
 
 
+# How far a depth-tested CAD line is nudged towards the viewer, as a share of
+# its distance to the viewpoint. Proportional rather than absolute for the same
+# reason the raycast's step past a hit is: a fixed epsilon is either too small
+# to clear the surface at range or large enough to lift a line off a small part
+# visibly. Small enough that the line still reads as lying *on* the surface.
+DEPTH_NUDGE = 0.002
+
+
+def _towards_viewer(
+    points: list["mathutils.Vector"], rv3d: bpy.types.RegionView3D | None
+) -> list["mathutils.Vector"]:
+    """Lift world-space points off the surface, towards the viewpoint.
+
+    Only needed when the CAD display is depth-tested: the lines lie exactly on
+    the surface they describe, so testing them against it without this is a
+    coin flip per pixel and they come out as a stipple. One view direction for
+    the whole batch rather than a per-point eye vector -- at a nudge this small
+    the difference at the edge of the frame is far below a pixel, and a draw
+    handler should not be normalising a vector per point.
+    """
+    if rv3d is None or not points:
+        return points
+    # Everything here comes out of the region's own matrix, so the draw handler
+    # still imports nothing it didn't already.
+    inverse = rv3d.view_matrix.inverted()
+    towards = inverse.col[2].to_3d().normalized()  # camera +Z: back at the viewer
+    origin = inverse.translation
+    return [point + towards * ((point - origin).length * DEPTH_NUDGE)
+            for point in points]
+
+
 def _draw_cad_structure(
     context: bpy.types.Context, state: "state_mod.RetopPatchState"
 ) -> None:
@@ -486,25 +589,41 @@ def _draw_cad_structure(
 
     matrix = obj.matrix_world
     gpu.state.blend_set('ALPHA')
-    gpu.state.depth_test_set('NONE')
+
+    # Drawn through the model by default -- that is what makes the structure of
+    # a whole part readable at a glance. Turned off, they are occluded like
+    # real geometry, so the far side of a curved or enclosed shape stops
+    # showing through the near side; the nudge is what keeps them from
+    # z-fighting with the very surface they lie on.
+    xray = getattr(state, "cad_display_xray", True)
+    rv3d = context.region_data
+    if xray:
+        gpu.state.depth_test_set('NONE')
+    else:
+        gpu.state.depth_test_set('LESS_EQUAL')
+
+    def place(points: list["mathutils.Vector"]) -> list["mathutils.Vector"]:
+        world = [matrix @ point for point in points]
+        return world if xray else _towards_viewer(world, rv3d)
 
     # Flow first, edges over it: the edges are the exact thing and should never
     # be hidden by the derived one.
     if want_flow:
         colour = tuple(getattr(state, "flow_color", (0.65, 0.45, 1.0)))
         _draw_line_batch(
-            [matrix @ point for point in cad_display.flow_segments(
+            place(cad_display.flow_segments(
                 mesh, getattr(state, "flow_density", 3),
-                getattr(state, "corner_angle_threshold", 135.0), face_id)],
+                getattr(state, "corner_angle_threshold", 135.0), face_id)),
             colour + (FLOW_ALPHA,), FLOW_WIDTH)
 
     if want_edges:
         colour = tuple(getattr(state, "cad_edge_color", (0.1, 0.9, 1.0)))
         _draw_line_batch(
-            [matrix @ point for point in cad_display.edge_segments(mesh, face_id)],
+            place(cad_display.edge_segments(mesh, face_id)),
             colour + (1.0,), getattr(state, "cad_edge_width", 2.0))
 
     gpu.state.blend_set('NONE')
+    gpu.state.depth_test_set('NONE')
 
 
 def _draw_brep_vertices(

@@ -5,3 +5,6 @@ __pycache__/
 
 # JetBrains IDE settings
 .idea/
+
+# Plasticity editor autosaves next to the fixture source
+*_autosave.plasticity

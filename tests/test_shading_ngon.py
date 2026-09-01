@@ -260,11 +260,18 @@ check("and toggles it off again", state.result_see_through is False
       and not result.show_in_front)
 state.result_see_through = True
 
-bindings = [(kmi.type, kmi.alt, kmi.idname) for _km, kmi in pr.operators._addon_keymaps]
-check("it is on Alt+X",
-      ('X', True, "retop.toggle_see_through") in bindings, bindings)
-check("and Alt+Z is left to Blender's own X-ray",
-      not any(t == 'Z' and alt for t, alt, _name in bindings), bindings)
+bindings = [(kmi.type, kmi.alt, kmi.shift, kmi.idname)
+            for _km, kmi in pr.operators._addon_keymaps]
+# Shift+X, not Alt+X: Alt+X is the mirror, borrowed from Hard Ops because that
+# is the reflex, and symmetry is reached for far more often than the x-ray.
+check("the retopo x-ray is on Shift+X",
+      ('X', False, True, "retop.toggle_see_through") in bindings, bindings)
+check("and Alt+X is the mirror",
+      ('X', True, False, "retop.mirror") in bindings, bindings)
+# Still true, and for the same reason as before: Alt+Z is Blender's own
+# viewport X-ray, and taking it over cost more than it gave.
+check("Alt+Z is left to Blender's own X-ray",
+      not any(t == 'Z' and alt for t, alt, _shift, _name in bindings), bindings)
 
 state.result_show_wire = False
 check("Show Wireframe off hides it", not result.show_wire, result.show_wire)

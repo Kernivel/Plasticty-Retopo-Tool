@@ -36,6 +36,13 @@ def _result_shading_update(
     mesh_build.refresh_result_shading(context)
 
 
+def _mirror_settings_update(
+    self: "RetopPatchState", context: bpy.types.Context
+) -> None:
+    from . import mesh_build
+    mesh_build.apply_mirror_settings(context)
+
+
 def _wire_opacity_update(
     self: "RetopPatchState", context: bpy.types.Context
 ) -> None:
@@ -237,9 +244,15 @@ class RetopPatchState(bpy.types.PropertyGroup):
         update=_appearance_update,
     )
     preview_offset: bpy.props.FloatProperty(
-        name="Preview Offset", default=0.0, soft_min=-0.05, soft_max=0.05,
-        description="Push the preview off the source surface along its normals, purely for "
-                     "visibility -- cosmetic only, never baked into the committed result",
+        # Same unit, same soft range and same precision as Result Offset, which
+        # it is added to: two sliders that add up to one distance and disagree
+        # on what a unit means are worse than useless.
+        name="Preview Offset", default=0.0, soft_min=-10.0, soft_max=10.0, precision=4,
+        description="Extra lift of the preview off the source surface (in the Length Unit "
+                     "above), on top of the one it already gets from Result Offset (which it "
+                     "follows, times a margin, so the patch being built always draws above the "
+                     "committed ones around it). Cosmetic only, never baked into the committed "
+                     "result",
         update=_appearance_update,
     )
 
@@ -327,7 +340,8 @@ class RetopPatchState(bpy.types.PropertyGroup):
         name="Show CAD Vertices", default=True,
         description="Dot every junction where two CAD edges meet -- a genuine B-rep vertex, as "
                      "opposed to the many boundary vertices the mesher put down. Those are the "
-                     "points patches weld to each other by",
+                     "points patches weld to each other by. These dots are drawn in screen space "
+                     "and always sit on top, even with 'Draw Through the Mesh' off",
     )
     show_surface_flow: bpy.props.BoolProperty(
         name="Show Surface Flow", default=False,
@@ -350,6 +364,14 @@ class RetopPatchState(bpy.types.PropertyGroup):
         default='OBJECT',
         description="How much of the CAD structure to draw. The whole object is what makes the "
                      "model's layout readable; one patch is what keeps a dense part legible",
+    )
+    cad_display_xray: bpy.props.BoolProperty(
+        name="Draw Through the Mesh", default=True,
+        description="Draw the CAD edges and surface flow over everything, including the parts of "
+                     "the model in front of them. Off: they are occluded like real geometry, so "
+                     "the back of a part stops showing through the front -- which is what makes a "
+                     "curved or enclosed shape readable. They are nudged towards the viewer just "
+                     "enough not to z-fight with the surface they lie on",
     )
     cad_edge_color: bpy.props.FloatVectorProperty(
         name="CAD Edge Color", subtype='COLOR', size=3, default=(0.1, 0.9, 1.0),
@@ -438,8 +460,72 @@ class RetopPatchState(bpy.types.PropertyGroup):
             ('OBJECT', "Pick an object", "Waiting for you to click a Plasticity object"),
             ('PATCH', "Pick a surface", "Waiting for you to click a patch on the current object"),
             ('ADJUST', "Adjust & commit", "Tweaking spans on the picked patch"),
+            ('TWEAK', "Hand-edit", "Blender's Edit Mode has the result mesh; the session is "
+                                    "waiting for Tab to take it back"),
         ],
         default='OBJECT',
+    )
+
+    # --- hand-editing the result mesh (see tweak.py) ---
+    #
+    # Merge by distance, vertex snapping and the knife are Edit Mode operators,
+    # so correcting a failed match by hand means handing the viewport to
+    # Blender for a moment. These are the settings that round trip is set up
+    # with, plus the two strings it needs to undo the setup.
+    tweak_merge_distance: bpy.props.FloatProperty(
+        name="Auto-Merge Distance", default=1e-3, min=0.0, soft_max=100.0, precision=4,
+        description="Threshold (in the Length Unit above) for Blender's Auto Merge while "
+                     "hand-editing: a vertex dropped this close to another is merged into it, so "
+                     "closing a seam is a drag rather than a drag followed by Merge by Distance. "
+                     "Larger than the Boundary Weld Distance on purpose -- that one closes a gap "
+                     "the generators left at float precision, this one has to forgive a hand",
+    )
+    tweak_auto_merge: bpy.props.BoolProperty(
+        name="Auto Merge", default=True,
+        description="Turn Blender's Auto Merge on while hand-editing. Off: vertices are only "
+                     "merged when you ask (M > By Distance), which is safer on dense retopology "
+                     "where the threshold could catch a neighbouring vertex",
+    )
+    tweak_snap_surface: bpy.props.BoolProperty(
+        name="Snap to CAD Surface", default=True,
+        description="Add Face Nearest to the vertex snapping while hand-editing, so a vertex you "
+                     "drag stays on the Plasticity surface instead of floating off it. Off: only "
+                     "vertex snapping, for when you are welding two retopo vertices together and "
+                     "the surface is in the way",
+    )
+    # Tool settings as they were before the round trip, as JSON. On the scene
+    # rather than a module global so an addon reload mid-edit doesn't lose the
+    # user's own snapping configuration.
+    tweak_saved_tool_settings: bpy.props.StringProperty(
+        name="Saved Tool Settings", default="")
+    tweak_return_object: bpy.props.StringProperty(
+        name="Hand-edit Return Object", default="")
+
+    # --- symmetry (see mesh_build.set_mirror_axes) ---
+    #
+    # Which axes are on lives on the Mirror modifier itself, not here: they
+    # belong to one object, and two objects being retopped in the same file
+    # have no reason to agree on them. These two are how the mirror behaves,
+    # which is a preference and does carry across objects.
+    mirror_clip: bpy.props.BoolProperty(
+        name="Clip at the Plane", default=True,
+        description="Stop vertices being dragged across the mirror plane while hand-editing, and "
+                     "hold the ones already on it there. Off: a vertex can cross, which shows up "
+                     "as the two halves overlapping",
+        update=_mirror_settings_update,
+    )
+    # Digits typed so far for direct span entry. On the scene rather than the
+    # modal instance because the keys that clear it -- U/V, N-gon, the span
+    # wheel -- are real operators now (see keymap.py), and an operator has no
+    # way to reach the running modal's attributes. The overlay echoes it.
+    typed_span: bpy.props.StringProperty(name="Typed Span", default="")
+
+    mirror_merge_distance: bpy.props.FloatProperty(
+        name="Mirror Merge Distance", default=1e-3, min=0.0, soft_max=100.0, precision=4,
+        description="Merge vertices this close to the mirror plane with their own reflection, so "
+                     "the seam down the middle closes instead of being two coincident edges. "
+                     "0 turns the merge off entirely",
+        update=_mirror_settings_update,
     )
 
     # --- output organisation ---

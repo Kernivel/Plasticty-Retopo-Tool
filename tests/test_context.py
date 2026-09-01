@@ -282,12 +282,20 @@ state.ngon_mode = True
 pr.operators.set_active_patch(bpy.context, res_obj, 77)
 
 
-class FakeWheelModal:
-    def _nudge_ngon_angle(self, context, direction):
-        pr.operators.RETOP_OT_session._nudge_ngon_angle(self, context, direction)
+# Ctrl+wheel is a real KeyMapItem on retop.nudge_span now, so this drives the
+# operator rather than a method on the modal -- which is also the only way it
+# can still be reached, the modal having stopped handling the wheel at all.
+state.session_active = True
+state.session_phase = 'ADJUST'
 
 
-wheel = FakeWheelModal()
+class _Wheel:
+    @staticmethod
+    def _nudge_ngon_angle(context, direction):
+        bpy.ops.retop.nudge_span(delta=direction)
+
+
+wheel = _Wheel()
 state.ngon_angle = 20.0
 wheel._nudge_ngon_angle(bpy.context, +1)
 check("scrolling up asks for more detail, i.e. a smaller angle",

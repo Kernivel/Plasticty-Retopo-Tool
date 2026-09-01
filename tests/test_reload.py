@@ -52,6 +52,18 @@ check("and generators.ngon specifically -- the one that was missed",
 # Record what _perform_reload actually reloads. It does `import importlib` and
 # then `importlib.reload(...)`, so the attribute is looked up at call time and
 # wrapping it here is enough.
+# Settings the reload must not eat. Blender keeps a PropertyGroup's values as
+# ID properties on the scene, keyed by name, so deleting and re-declaring
+# Scene.plasticity_retop re-attaches to the same stored data -- but that is a
+# fact about Blender's storage, not about this code, and it is exactly the kind
+# of thing that quietly stops being true. Asserted rather than assumed: a
+# reload that reset the corner threshold would change every patch's side count,
+# hence its generator, and finished retopology would stop resolving.
+state_before = bpy.context.scene.plasticity_retop
+state_before.corner_angle_threshold = 61.5
+state_before.resolution = 'HIGH'
+state_before.result_color = (0.9, 0.2, 0.1)
+
 reloaded = []
 real_reload = importlib.reload
 
@@ -77,6 +89,47 @@ check("no module was reloaded twice in one pass",
 check("the panel is still registered", hasattr(bpy.types, "VIEW3D_PT_retop"))
 check("the operators are still registered", hasattr(bpy.ops.retop, "session"))
 check("scene state survives", hasattr(bpy.context.scene, "plasticity_retop"))
+
+state_after = bpy.context.scene.plasticity_retop
+check("a tuned corner threshold survives the reload",
+      abs(state_after.corner_angle_threshold - 61.5) < 1e-4,
+      state_after.corner_angle_threshold)
+check("so does the resolution preset", state_after.resolution == 'HIGH',
+      state_after.resolution)
+check("and a colour", abs(state_after.result_color[0] - 0.9) < 1e-3,
+      tuple(state_after.result_color))
+
+# Handlers are removed by *name*, because a reload leaves the previous function
+# object registered and it is no longer identical to the new one. Get that
+# wrong and every reload stacks another copy, so one Ctrl+Z runs the undo
+# reconciliation as many times as the addon has been reloaded that session.
+handler_counts = {
+    name: [h.__name__ for h in getattr(bpy.app.handlers, name)].count(func)
+    for name, func in (("undo_post", "_on_undo_redo"),
+                       ("redo_post", "_on_undo_redo"))
+}
+check("a reload does not stack the app handlers",
+      all(count == 1 for count in handler_counts.values()), handler_counts)
+
+# Same for the keymap items: _addon_keymaps is a module global, so it is wiped
+# by the reload -- which is only safe because the unregister happens *before*
+# the modules are reloaded. Get that order wrong and every reload orphans a set
+# of keymap items nothing can ever remove, and the session's keys start firing
+# two and three times per press.
+pr_reloaded = sys.modules[PACKAGE]
+if bpy.context.window_manager.keyconfigs.addon is not None:
+    expected = sum(len(pr_reloaded.keymap.default_bindings(a))
+                   for a in pr_reloaded.keymap.ACTION_IDS)
+    registered = len(pr_reloaded.operators._addon_keymaps)
+    check("nor orphan a set of keymap items", registered == expected,
+          f"{registered} registered vs {expected} declared")
+    # The overlay names its keys off these; a stale wrapper there is a draw
+    # handler dereferencing freed data.
+    check("and the overlay's view of them is rebuilt too",
+          all(pr_reloaded.keymap.items_for(a)
+              for a in pr_reloaded.keymap.ACTION_IDS),
+          [a for a in pr_reloaded.keymap.ACTION_IDS
+           if not pr_reloaded.keymap.items_for(a)])
 
 # The stale-module symptom itself: functions added to a submodule must be
 # reachable from the reloaded package.
