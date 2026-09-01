@@ -118,6 +118,7 @@ nothing reads it.
 | `Cylinder` | 3 | `ring.is_band` saying yes. Wall = Ring; caps = cornerless discs given synthesised corners. |
 | `Cone` | 2 | A lateral face that closes on a **point**. The apex is a singularity no quad grid represents. |
 | `Plate` | 5 | A hole nearly as large as the plate — a genuine band. |
+| `Flat Loop` | 5 | A flat annulus whose two rims are both cornerless. The shape that shows a band's rungs leaning: with nothing but arc length pairing the loops, every quad is sheared by the same angle. See `ring.phase_align` and `tests/test_ring_straightness.py`. |
 | `Square Plate Small Hole` | 11 | A hole *small* relative to the plate — the annulus that must **not** be filled as a band. |
 | `Square Plate Small Hole Far Away` | 11 | The same shape, modelled out at (50, 100, 20). |
 | `Square Plate Small Hole Scaled Down` | 11 | The same shape again, a hundredth the size. |

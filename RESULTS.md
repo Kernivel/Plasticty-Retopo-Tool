@@ -10,11 +10,11 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 
 | | |
 |---|---|
-| Generated | 2026-08-26 |
-| Blender | 5.0.1 |
-| Addon | 0.34.0 (2026-08-25-a) |
+| Generated | 2026-09-02 |
+| Blender | 5.1.1 |
+| Addon | 0.44.0 (2026-09-02-b) |
 | Resolution | MID |
-| Fixture | `tests/fixtures/TestCases.blend`, 14 objects |
+| Fixture | `tests/fixtures/TestCases.blend`, 15 objects |
 
 **Deviation is a percentage of each object's bounding-box diagonal, sampled across face interiors** — never at vertices, which the generators put on the surface by construction and which therefore read ~0 on every shape. The `vertex` column is shown only to make that point: it is the number a naive measurement would report.
 
@@ -22,34 +22,36 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 
 | Object | Source tris | CAD faces | Generators | Result | Deviation max | Open edges |
 |---|--:|--:|---|--:|--:|--:|
-| `Carved Rounded Slot` | 116 | 11 | 9&nbsp;Quad, 1&nbsp;Ring, 1&nbsp;Wedge | 104v / 75f | 1.7634% | 60 |
-| `Cone` | 92 | 2 | 2&nbsp;Quad | 172v / 144f | 13.0024% | 56 |
-| `Cube Bevel Edges` | 108 | 9 | 7&nbsp;Quad, 2&nbsp;Triangle | 366v / 339f | 1.0094% | 73 |
+| `Carved Rounded Slot` | 156 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 202v / 131f | 0.2761% | 150 |
+| `Cone` | 188 | 2 | 2&nbsp;Quad | 682v / 612f | 13.8728% | 140 |
+| `Cube Bevel Edges` | 168 | 9 | 7&nbsp;Quad, 2&nbsp;Triangle | 762v / 721f | 0.2910% | 105 |
 | `Cube Chamfer Edges` | 20 | 9 | 8&nbsp;Quad, 1&nbsp;N-Side | 44v / 36f | 0.0001% | 32 |
-| `Cylinder` | 204 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 709v / 670f | 0.1506% | 78 |
-| `Loopsided Chamfers Cube` | 28 | 14 | 14&nbsp;Quad | 16v / 14f | 0.0001% | 0 |
-| `Plate` | 398 | 5 | 3&nbsp;Ring, 2&nbsp;Quad | 398v / 323f | 0.1828% | 150 |
-| `Plate And Cylinder` | 1201 | 14 | 10&nbsp;Quad, 4&nbsp;Ring | 931v / 865f | 2.8593% | 166 |
-| `Shape with holes` | 412 | 17 | 15&nbsp;Quad, 2&nbsp;Ring | 261v / 184f | 8.9809% | 150 |
-| `Sphere` | 4970 | 1 | 1&nbsp;unusable | — | — | — |
-| `Square Plate Small Hole` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 29v / 24f | 0.0001% | 18 |
+| `Cylinder` | 320 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 1652v / 1590f | 0.0608% | 120 |
+| `Flat Loop` | 622 | 4 | 4&nbsp;Ring | 352v / 236f | 0.0737% | 232 |
+| `Loopsided Chamfers Cube` | 28 | 14 | 14&nbsp;Quad | 34v / 32f | 0.0001% | 0 |
+| `Plate` | 622 | 5 | 3&nbsp;Ring, 2&nbsp;Quad | 833v / 657f | 0.0770% | 348 |
+| `Plate And Cylinder` | 2803 | 14 | 10&nbsp;Quad, 4&nbsp;Ring | 2359v / 2139f | 0.1399% | 464 |
+| `Shape with holes` | 616 | 17 | 15&nbsp;Quad, 2&nbsp;Ring | 569v / 454f | 8.9746% | 226 |
+| `Sphere` | 12320 | 1 | 1&nbsp;unusable | — | — | — |
+| `Square Plate Small Hole` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 16v / 14f | 0.0001% | 0 |
 | `Square Plate Small Hole Far Away` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 16v / 14f | 0.0007% | 0 |
 | `Square Plate Small Hole Scaled Down` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 12v / 10f | 0.0661% | 0 |
-| `Torus` | 11136 | 1 | 1&nbsp;unusable | — | — | — |
+| `Torus` | 27126 | 1 | 1&nbsp;unusable | — | — | — |
 
 ## Deviation from the CAD surface
 
 | Object | mean | rms | p95 | max | vertex max |
 |---|--:|--:|--:|--:|--:|
-| `Carved Rounded Slot` | 0.0239% | 0.1246% | 0.1117% | **1.7634%** | 0.0000% |
-| `Cone` | 0.2207% | 0.8876% | 0.8311% | **13.0024%** | 0.0000% |
-| `Cube Bevel Edges` | 0.0767% | 0.2344% | 0.6948% | **1.0094%** | 0.0013% |
+| `Carved Rounded Slot` | 0.0073% | 0.0267% | 0.0431% | **0.2761%** | 0.0003% |
+| `Cone` | 0.0626% | 0.4220% | 0.1725% | **13.8728%** | 0.0001% |
+| `Cube Bevel Edges` | 0.0261% | 0.0690% | 0.1836% | **0.2910%** | 0.0026% |
 | `Cube Chamfer Edges` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
-| `Cylinder` | 0.0385% | 0.0568% | 0.1099% | **0.1506%** | 0.0002% |
-| `Loopsided Chamfers Cube` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
-| `Plate` | 0.0192% | 0.0427% | 0.1097% | **0.1828%** | 0.0000% |
-| `Plate And Cylinder` | 0.0410% | 0.0978% | 0.1744% | **2.8593%** | 0.0004% |
-| `Shape with holes` | 0.0543% | 0.2510% | 0.1317% | **8.9809%** | 0.0000% |
+| `Cylinder` | 0.0174% | 0.0252% | 0.0478% | **0.0608%** | 0.0006% |
+| `Flat Loop` | 0.0149% | 0.0258% | 0.0540% | **0.0737%** | 0.0000% |
+| `Loopsided Chamfers Cube` | 0.0000% | 0.0000% | 0.0001% | **0.0001%** | 0.0000% |
+| `Plate` | 0.0072% | 0.0179% | 0.0478% | **0.0770%** | 0.0001% |
+| `Plate And Cylinder` | 0.0145% | 0.0261% | 0.0599% | **0.1399%** | 0.0060% |
+| `Shape with holes` | 0.0242% | 0.1563% | 0.0675% | **8.9746%** | 0.0000% |
 | `Square Plate Small Hole` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
 | `Square Plate Small Hole Far Away` | 0.0000% | 0.0001% | 0.0000% | **0.0007%** | 0.0000% |
 | `Square Plate Small Hole Scaled Down` | 0.0059% | 0.0172% | 0.0441% | **0.0661%** | 0.0001% |
@@ -60,16 +62,17 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 
 | Object | Verts | Faces | Face sizes | Open edges | Non-manifold | Unwelded | Interior poles |
 |---|--:|--:|---|--:|--:|--:|--:|
-| `Carved Rounded Slot` | 104 | 75 | 2&times;3-gon, 73&times;4-gon | 60 | 0 | 0 | 2 |
-| `Cone` | 172 | 144 | 144&times;4-gon | 56 | 0 | 0 | 0 |
-| `Cube Bevel Edges` | 366 | 339 | 11&times;3-gon, 328&times;4-gon | 73 | 0 | 0 | 2 |
+| `Carved Rounded Slot` | 202 | 131 | 131&times;4-gon | 150 | 0 | 0 | 4 |
+| `Cone` | 682 | 612 | 612&times;4-gon | 140 | 0 | 0 | 0 |
+| `Cube Bevel Edges` | 762 | 721 | 15&times;3-gon, 706&times;4-gon | 105 | 0 | 0 | 2 |
 | `Cube Chamfer Edges` | 44 | 36 | 36&times;4-gon | 32 | 0 | 0 | 5 |
-| `Cylinder` | 709 | 670 | 670&times;4-gon | 78 | 0 | 0 | 4 |
-| `Loopsided Chamfers Cube` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 8 |
-| `Plate` | 398 | 323 | 323&times;4-gon | 150 | 0 | 0 | 0 |
-| `Plate And Cylinder` | 931 | 865 | 865&times;4-gon | 166 | 0 | 0 | 4 |
-| `Shape with holes` | 261 | 184 | 184&times;4-gon | 150 | 0 | 0 | 8 |
-| `Square Plate Small Hole` | 29 | 24 | 24&times;4-gon | 18 | 0 | 0 | 8 |
+| `Cylinder` | 1652 | 1590 | 1590&times;4-gon | 120 | 0 | 0 | 4 |
+| `Flat Loop` | 352 | 236 | 236&times;4-gon | 232 | 0 | 0 | 0 |
+| `Loopsided Chamfers Cube` | 34 | 32 | 32&times;4-gon | 0 | 0 | 0 | 8 |
+| `Plate` | 833 | 657 | 657&times;4-gon | 348 | 0 | 0 | 4 |
+| `Plate And Cylinder` | 2359 | 2139 | 2139&times;4-gon | 464 | 0 | 0 | 4 |
+| `Shape with holes` | 569 | 454 | 454&times;4-gon | 226 | 0 | 0 | 8 |
+| `Square Plate Small Hole` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 8 |
 | `Square Plate Small Hole Far Away` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 8 |
 | `Square Plate Small Hole Scaled Down` | 12 | 10 | 10&times;4-gon | 0 | 0 | 0 | 8 |
 
@@ -79,16 +82,17 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 
 | Object | Aspect p50 | p95 | max | Skew p50 | p95 | max | Edge cv |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| `Carved Rounded Slot` | 2.29 | 10.00 | **11.8** | 0.0° | 54.5° | 86.5° | 0.75 |
-| `Cone` | 1.19 | 3.78 | **5.8** | 31.4° | 67.1° | 78.1° | 0.50 |
-| `Cube Bevel Edges` | 1.23 | 4.00 | **7.1** | 0.0° | 39.1° | 88.2° | 0.72 |
+| `Carved Rounded Slot` | 1.85 | 10.00 | **10.0** | 14.8° | 50.4° | 69.9° | 1.34 |
+| `Cone` | 1.12 | 2.74 | **10.5** | 30.8° | 68.2° | 84.5° | 0.60 |
+| `Cube Bevel Edges` | 1.27 | 3.61 | **9.8** | 0.0° | 39.0° | 89.5° | 0.85 |
 | `Cube Chamfer Edges` | 1.77 | 14.08 | **14.1** | 0.0° | 61.1° | 90.0° | 0.35 |
-| `Cylinder` | 1.07 | 1.15 | **1.2** | 1.2° | 37.7° | 80.4° | 0.10 |
-| `Loopsided Chamfers Cube` | 4.95 | 11.06 | **11.1** | 26.6° | 44.0° | 44.0° | 0.51 |
-| `Plate` | 1.19 | 1.63 | **1.6** | 12.8° | 49.5° | 79.3° | 0.23 |
-| `Plate And Cylinder` | 1.04 | 1.81 | **8.0** | 2.0° | 7.4° | 75.6° | 1.66 |
-| `Shape with holes` | 1.20 | 1.39 | **9.2** | 1.3° | 3.6° | 3.6° | 2.10 |
-| `Square Plate Small Hole` | 3.10 | 400.00 | **400.0** | 0.0° | 45.0° | 45.0° | 0.76 |
+| `Cylinder` | 1.01 | 1.08 | **1.1** | 0.6° | 37.9° | 83.3° | 0.09 |
+| `Flat Loop` | 1.11 | 1.11 | **1.1** | 2.2° | 3.7° | 3.8° | 0.03 |
+| `Loopsided Chamfers Cube` | 2.21 | 7.69 | **7.7** | 0.0° | 44.0° | 44.0° | 0.50 |
+| `Plate` | 1.05 | 1.11 | **1.1** | 6.2° | 52.9° | 83.3° | 0.12 |
+| `Plate And Cylinder` | 1.12 | 1.82 | **10.0** | 0.0° | 29.8° | 79.9° | 1.63 |
+| `Shape with holes` | 1.01 | 1.03 | **9.2** | 0.0° | 0.0° | 0.0° | 2.51 |
+| `Square Plate Small Hole` | 5.00 | 800.00 | **800.0** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Far Away` | 5.00 | 798.92 | **798.9** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Scaled Down` | 3.54 | 7.07 | **7.1** | 0.0° | 45.0° | 45.0° | 0.68 |
 
@@ -100,7 +104,7 @@ The same CAD shape, modelled three times in Plasticity: at the origin, out at (5
 
 | Placement | Result | Generators | Deviation max | Open edges | Aspect max |
 |---|--:|---|--:|--:|--:|
-| `Square Plate Small Hole` | 29v / 24f | 10&nbsp;Quad, 1&nbsp;Ring | 0.0001% | 18 | 400 |
+| `Square Plate Small Hole` | 16v / 14f | 10&nbsp;Quad, 1&nbsp;Ring | 0.0001% | 0 | 800 |
 | `Square Plate Small Hole Far Away` | 16v / 14f | 10&nbsp;Quad, 1&nbsp;Ring | 0.0007% | 0 | 799 |
 | `Square Plate Small Hole Scaled Down` | 12v / 10f | 10&nbsp;Quad, 1&nbsp;Ring | 0.0661% | 0 | 7 |
 
@@ -113,7 +117,7 @@ Same geometry, same generator chosen for every face — only the order patches a
 | Object | Fixture order | Face id ascending | Face id descending |
 |---|--:|--:|--:|
 | `Cube Chamfer Edges` | 44v / 36f | 42v / 32f | 22v / 16f |
-| `Cube Bevel Edges` | 366v / 339f | 413v / 394f | 69v / 56f |
+| `Cube Bevel Edges` | 762v / 721f | 935v / 906f | 125v / 108f |
 
 This is why the golden table in `tests/test_fixtures.py` treats generator and side count as the entries that should hold steady, and vertex and face counts as regression detectors rather than quality scores.
 

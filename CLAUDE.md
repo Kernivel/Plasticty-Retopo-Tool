@@ -135,6 +135,9 @@ this before anything else when a patch dices strangely far from the origin.
 | `patchprep.py` | one face → `PreparedPatch`: corners resolved, boundary split into sides, planarity |
 | `sidematch.py` | side references, what each may match, pin kinds, span-collision resolution, substitution |
 | `mesh_build.py` | preview object, committing into `<Source>_Retop`, span registry, committed-boundary cache, appearance, shading, collection mirroring |
+| `keymap.py` | the keybind declaration + live-item lookup; leaf, so `overlay` can read it |
+| `prefs.py` | the addon preferences page: Blender's own keymap rows |
+| `tweak.py` | the Edit Mode round trip: tool-setting setup and restore |
 | `operators.py` | the session modal + commit/discard/reload operators |
 | `overlay.py` | keybind hints (POST_PIXEL) + every kind of dot; side highlight and CAD structure lines (POST_VIEW) |
 | `state.py` | all scene properties; span props have live-update callbacks |
@@ -310,6 +313,34 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   per-side allocation with that same helper to register spans per loop —
   pairing corners cyclically across both loops' ids would invent a side running
   from the outer boundary to the hole.
+- **A band's rungs must run straight across it, and whole-index alignment
+  cannot get them there.** Every quad runs from `outer[i]` to `inner[i]`, so
+  how the loops are indexed against each other *is* the shape of the quads.
+  `align_rings` searches whole offsets, which is all it can do once both loops
+  are resampled — leaving up to half a step of rotation. On an annulus that
+  residue is not noise but a **constant shear**, the same angle on every rung:
+  half a step of 64 points is 2.8°, and of 16 points 18.6°. `ring.phase_align`
+  removes it by choosing where the inner loop is *sampled from* rather than
+  which sample to start at — the phase is read off the geometry (each outer
+  point's nearest arc-length on the inner loop implies an offset; their
+  **circular** mean is the answer, circular because 0 and L are the same
+  offset and a plain average across the seam lands halfway round).
+  **Only on a cornerless rim.** A corner is an untouched source vertex welded
+  by identity, so moving one while keeping its name would make a later patch
+  reuse a vertex that is no longer there; a hole with real corners keeps them
+  and its shear. A phased rim's corner id is *dropped* instead — the list is
+  left short and the caller's `zip` does the rest — so it welds by proximity
+  like every other boundary point.
+  **And a phased rim has to be reprojected.** Boundary rows are normally left
+  exactly where the loops put them, because they are samples of the real
+  boundary that a neighbour welds to. A phased one lands nowhere near a source
+  vertex by construction, so on a curved rim every point sits mid-chord, a
+  sagitta inside the surface — which is what took three fixture shapes from
+  ~0.002% vertex deviation to 0.05%. It is not shared with anything (its
+  corner id is gone), so it gets the interior's reprojection.
+  `tests/test_ring_straightness.py` measures the angle between each rung and
+  the radial it should lie along, and pins the *spread* as well as the worst
+  case — a fix that merely averaged the error out would otherwise pass.
 - **Everything resolves through `<Source>_Retop`.** Rename or re-import the CAD
   object and its retopology becomes unreachable — a session on the new name
   starts a second result mesh that overlaps the first. `orphan_result_objects`
@@ -324,11 +355,34 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   rewritten afterwards (`clear_preview_object` empties it,
   `remove_preview_object` is session teardown only); materials are made by
   `ensure_materials` at the same moment, and every `refresh_*_appearance` path
-  is get-only. The three structural moments — entering an object, starting a
-  re-edit, ending the session — call `operators.push_undo`. `undo_post`/
-  `redo_post` run `_on_undo_redo`, which drops the active patch and any re-edit
-  snapshot (undo has just replaced the mesh state they described) and touches
-  **scene properties only**.
+  is get-only. Every moment that creates or frees an ID, or writes to the
+  result mesh, calls `operators.push_undo`: entering an object, opening a
+  re-edit, each **commit**, each **delete**, a discard that *restored* one, and
+  ending the session. `undo_post`/`redo_post` run `_on_undo_redo`, which drops
+  the active patch and any re-edit snapshot (undo has just replaced the mesh
+  state they described) and touches **scene properties only**.
+- **One undo step per committed patch, pushed by hand.** Ctrl+Z used to roll
+  the *whole session* back: the only steps below a mid-session state were
+  "Retop: enter <obj>" and the re-edit ones, so one press restored the file
+  state from before the session and every committed patch went at once. Commit,
+  delete and discard therefore push their own step — and carry `REGISTER`
+  **without** `UNDO`, because Blender pushes one of its own for an
+  `OPTYPE_UNDO` operator run from the UI and two identical states on the stack
+  read as a Ctrl+Z that does nothing. (The modal calls them through `bpy.ops`,
+  which is the path where the automatic push was missing in the first place.)
+  A discard with nothing to restore pushes nothing: it changed no datablock.
+  These are also the steps that own the snapshot datablock `keep_reedit_removal`
+  frees, so pushing them closes a latent case of the invariant above.
+  `tests/test_undo.py` pins the count per action.
+- **The undo handler defers everything it may not do to the modal.**
+  `_on_undo_redo` can only write scene properties, but the step also invalidated
+  the preview geometry, the hover and the cached side references — so it sets
+  `operators._undo_needs_reconcile`, and `_reconcile_after_undo` runs on the
+  modal's next event (the 0.1 s timer, so within a frame or two). Undoing *past*
+  the session's own start restores `session_active = False`, and the modal must
+  then finish rather than sit there swallowing viewport events for a session the
+  panel no longer shows — with `end_session(push=False)`, since pushing a step
+  straight after an undo throws away the redo the user just made available.
 - **Type hints everywhere, but never `from __future__ import annotations`.**
   A Blender property is declared *as an annotation* —
   `span_u: bpy.props.IntProperty(...)`, nothing after an `=` — so the thing
@@ -452,7 +506,7 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   crashed modal leaves `session_active` set with nothing listening;
   `operators.session_is_running()` detects it and the panel offers a reset.
 - **`show_in_front` is a setting, not a consequence of the session.**
-  `result_see_through` (Alt+X, `RETOP_OT_toggle_see_through`) decides whether
+  `result_see_through` (Shift+X, `RETOP_OT_toggle_see_through`) decides whether
   the retopology draws over the rest of the scene or is occluded like any other
   object — and turning it *off* is the only way to check the result sits on the
   surface rather than floating off it, which is something you want mid-session.
@@ -461,6 +515,28 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   different question anyway.
 - **Cosmetic offsets are Displace modifiers, never baked.** Commit reads the
   preview's *base* mesh; the result offset sets `show_render = False`.
+  **And there is only one offset, not two.** `mesh_build.result_lift` is the
+  measure the committed result is pushed off the CAD surface by, and the
+  preview takes the same one times `PREVIEW_LIFT_RATIO` (`preview_lift`,
+  with `preview_offset` as an *extra* on top). **Both go through
+  `to_blender_units`**, which the extra one did not: it was added raw, so in
+  millimetres the two sliders sat on scales a thousand apart and one whole unit
+  of Extra Offset was a metre — the smallest usable drag threw the preview off
+  the model. Two controls that add up to one distance must agree on what a unit
+  is, which is also why they now share a soft range and a precision.
+  The preview used to sit at 0
+  by default, i.e. on the surface and *under* every committed neighbour: a
+  patch hovered before the click that removes its faces came back orange
+  buried in blue, and a shared boundary showed a step that exists in neither
+  mesh. Strictly more, never equal — two coplanar surfaces z-fight into a
+  stipple — and only by a fraction of an offset that is itself 0.1% of the
+  model, so the seam still reads as flush. `refresh_result_appearance` ends
+  by refreshing the preview for the same reason, and `show_in_front` on the
+  preview follows `result_see_through` (Shift+X) rather than being pinned on:
+  checking the retopology against the surface has to include the patch being
+  built. The preview is stamped with its source object
+  (`PREVIEW_SOURCE_PROP`) so the automatic offset resolves outside a session
+  too.
 - **Order matters in `end_session` / `exit_session_object`:** clear the state
   first, *then* call `refresh_result_appearance` — it derives every mesh's look
   from session state, so refreshing first re-applies what you're clearing.
@@ -505,6 +581,27 @@ Keybinds in `ADJUST`: Ctrl+wheel = span (or N-gon detail), `0-9`/Backspace = typ
 Tab = U/V (quad/wedge), `N` = n-gon mode, `M` = match a neighbour,
 `X` = delete the patch (re-edit only), right-click or Enter = commit,
 Esc = clear typing then discard. Plain wheel stays zoom.
+
+Ctrl+Z is deliberately *not* one of them: the modal passes it through to
+Blender, and the session's own undo steps (one per committed patch) are what
+make that mean "take the last patch back" instead of "roll the session back".
+
+**Tab is per phase, and in `ADJUST` it is the only one the session keeps.**
+In `PATCH` it opens the hand-edit round trip below; in `OBJECT` it is not the
+session's at all and falls through to Blender. In `ADJUST` it is U/V — and it
+is still swallowed on a single-span generator, because a patch is open there
+and letting Blender toggle Edit Mode would take the session out from under it,
+but it now *reports* that instead of doing nothing. A key that does nothing and
+says nothing reads as a captured key, which is exactly how the unconditional
+version of that line got reported as "the addon eats Tab".
+
+**The session refuses to start outside Object Mode** (`RETOP_OT_session.poll`).
+It used to run the whole entry path from Edit Mode — create the result mesh,
+create the preview object, push an undo step — and only *then* have the modal
+hand the viewport straight back, since it does nothing in another mode. Two
+datablocks created from inside an edit session, for a session that never
+opened: that is the shape of the Ctrl+Z crash the undo invariant exists to
+prevent. The panel says which mode to leave rather than offering a dead button.
 
 **Deleting a patch** (`X`, `RETOP_OT_delete_patch`) falls straight out of the
 re-edit model: picking a committed patch already took its faces out and
@@ -726,6 +823,240 @@ a *grid* neighbour along a shared edge, so only their shared corners weld. Side
 matching buys that back exactly — a matched side is handed the neighbour's own
 vertices — and `ngon_match_neighbours` does it without being asked.
 
+## Keys (`keymap.py`, `prefs.py`)
+
+The session's keys were `event.type == 'X'` comparisons inside `_modal`. That
+leaves nothing to remap and nothing in Blender's keymap editor to find either,
+because a modal operator reads raw events and never goes near a keymap. The
+first attempt at fixing that was a table plus a capture modal plus a panel to
+edit it in — a second, worse keymap editor next to the real one.
+
+**They are real `KeyMapItem`s on real operators now, and Blender owns all of
+it**: the editing UI, the conflict display, the per-item restore, the
+persistence in the user's preferences. `keymap.py` only *declares* what to
+register; `prefs.py` draws the rows with `rna_keymap_ui.draw_kmi` on the
+addon's preferences page, and the panel's Keybinds tab is a button that opens
+it (`RETOP_OT_open_keymap_prefs`) plus a read-only list of what isn't
+remappable. The same items show up under Preferences > Keymap > Add-ons.
+
+**Who dispatches them differs by scope, and that split is not belt-and-braces.**
+`GLOBAL` actions (isolate, mirror, x-ray) are dispatched by Blender like any
+keymap item, because they must work with no session. `SESSION` actions are
+dispatched by the **modal**, which resolves the event against the live items
+(`keymap.session_action_for`) and runs the operator itself.
+
+Letting them fall through to the keymap does not work: an item in the `3D View`
+keymap does not reliably beat one in a *mode* keymap, and the session's keys
+collide with those constantly — `X` is `object.delete` in Object Mode, `Tab` is
+`object.editmode_toggle` in Object Non-modal. Registering each action in
+whichever keymap owns its competitor is unmaintainable and still loses to the
+next addon that claims the key; MACHIN3 puts its own `Alt+X` in `Mesh` rather
+than `3D View` for exactly this reason. The modal sits above every keymap, so
+dispatching there always wins, and the items stay real — Blender's rows edit
+them, the keymap editor lists them, the preferences save them.
+
+The failure that forced this was not cosmetic: with `X` falling through,
+pressing it on a patch that turned out not to be committed reached
+`object.delete` and took the CAD object with it. Hence `_MUST_CONSUME`: a
+session action whose poll *fails* is still consumed for the two keys Blender
+claims (`delete_patch`, `hand_edit`) and says why; everything else falls
+through on purpose, so `N` outside `ADJUST` still opens the sidebar.
+
+**No key is spelled out in `_modal`.** `tests/test_keymap.py` greps its source
+for the event types it must not test — a hardcoded `event.type == 'X'` is what
+made them unremappable in the first place, and it comes back one line at a
+time.
+
+**The `poll` is where the phase logic lives.** Every action is offered whether
+a session is running or not, so each operator polls `session_active` and its
+phases. Three actions share `TAB` — U/V in `ADJUST`, hand-edit in `PATCH`,
+back-from-hand-edit in `TWEAK` — with mutually exclusive polls, so the first
+whose poll passes is the one that runs. That is the "one key, two meanings"
+design expressed as data instead of spelled out. With no session, all three
+fail and `Tab` belongs to Blender again.
+
+**Two things stay outside the keymap**: the **digits and Backspace** (numeric
+entry, not a shortcut — they must stay instantaneous and only make sense as a
+block), and the mirror's **`Alt+X` then `X`/`Y`/`Z`**, a key *sequence*, which
+Blender's keymap cannot express.
+
+**The left click is split, not fixed.** Taking the side under the cursor is
+`retop.pin_side`, two normal bindings differing by a `source` property (plain
+click follows the committed neighbour, `Ctrl` the CAD edge). What stays in
+`_modal_match` is only the *fallback* — nothing under the cursor, so commit —
+which genuinely depends on the hover; the picker returns `PASS_THROUGH` the
+moment a side is under the cursor and the binding takes it from there. Ctrl+
+click was fixed for a while purely because it had been lumped in with that
+fallback, which it never shared.
+
+**`typed_span` moved to the scene.** The keys that clear it — U/V, N-gon, the
+span wheel — are operators now, and an operator has no way to reach the running
+modal's attributes. The overlay echoes the same property.
+
+**`RETOP_OT_back` asks for the session to end; it does not end it.** The timer,
+the modal cursor and the draw handlers belong to the modal instance, so the
+operator clears `session_active` and the modal acts on it at the top of
+`_modal`. Same shape as the undo reconciliation.
+
+**The modal catches up with phases it did not cause.** `retop.back`,
+`retop.tweak_mesh` and the panel's buttons all move the phase without telling
+the instance, leaving a stale hover and a cursor describing the phase before.
+One `session_phase != self._last_phase` check covers every route in — and it
+clears the hover only when the new phase is `PATCH` or `OBJECT`, because
+entering `ADJUST` is the modal's own click handler and the hover it just built
+*is* the preview.
+
+**The overlay reads the live items** (`keymap.describe`), never the
+declaration: a hint that says `E` when the key is now `Ctrl+E` is worse than no
+hint, since it is the one place a user checks before deciding the feature is
+broken. It falls back to the declared default when nothing is registered, which
+is the `--background` case. `items_for` drops wrappers Blender has freed under
+it — a draw handler is the worst place to find that out. `commit` is the one
+action whose hint lists *all* its bindings; the right-click is the
+Plasticity-style affordance people arrive expecting.
+
+**The registry keys on the action, not the operator.** Two items share
+`retop.nudge_span` and differ only by a `delta` property, so matching them back
+by idname would pair them up wrong.
+
+**A reload does not lose settings, and nothing here saves them.** Blender keeps
+a PropertyGroup's values as ID properties on the scene, keyed by name, so
+`del bpy.types.Scene.plasticity_retop` and re-declaring it re-attach to the
+same stored data. `tests/test_reload.py` asserts it rather than trusting it: it
+is a fact about Blender's storage, not about this code. The same test pins that
+a reload neither stacks the app handlers (removed *by name*, since a reload
+leaves a new function object) nor orphans keymap items (the unregister happens
+*before* the modules reload, or the session's keys would fire twice per press).
+
+## Symmetry (`mesh_build`, `RETOP_OT_mirror`)
+
+`Alt+X` then `X`/`Y`/`Z` mirrors the retopology — the Hard Ops reflex, which is
+why the retopo x-ray moved to `Shift+X`. **Not `Alt+Z`**: that is Blender's own
+viewport X-ray, and the note under `result_see_through` about not taking it
+over still stands.
+
+**It is a Mirror modifier on the result object, never baked geometry**, and
+that is not merely non-destructiveness. Every piece of bookkeeping here reads
+the result mesh's *base* data — commit and re-edit through `PATCH_ID_ATTR`,
+matching through `committed_boundary_map`, `apply_result_shading`,
+`adopt_untracked_faces` — so a modifier is invisible to all of it by
+construction. Baked mirror faces would carry the same patch ids as the
+originals, and `remove_patch_from_result` deletes *every* face carrying the id
+being re-edited: re-editing one patch would take both halves out and rebuild
+one, tearing a hole in the mirrored side that nothing would put back.
+
+**The plane is the source object's origin** (`mod.mirror_object = source_obj`),
+not the result object's. Plasticity drops every import at the world origin so
+the two coincide today, but that is a fact about the current bridge, and the
+source object is what "the object" means to the user.
+
+**Which axes are on lives on the modifier, not in scene state.** They belong to
+one object, and two objects retopped in the same file have no reason to agree.
+`mirror_axes` reads them back for the panel; only *how* the mirror behaves
+(`mirror_clip`, `mirror_merge_distance`) is a scene preference. A modifier is
+not an ID, so all of this is safe from a property callback and outside an undo
+step — the same reason `_apply_offset_modifier` is.
+
+**Applying it has to stamp `NO_PATCH` on the copies**, which is the whole
+reason `bake_mirror` exists instead of a note pointing at the modifier
+dropdown. Untracked is the right resting state: unclaimed faces are never
+deleted, and `adopt_untracked_faces` hands each copy to the Plasticity face it
+sits on the next time the object is entered — which, on the symmetric part this
+was used for, is the real face on the other side. The copies are told from the
+originals by **face centre**, not by index: the originals come through the
+apply untouched so their centres match exactly, while assuming Blender appends
+the mirrored half is an ordering detail that could change under a silent
+corruption.
+
+That hand-off is **only correct because the part is symmetric**, and the
+degenerate case is worth naming: mirror a patch out over empty space, apply it,
+and adoption has only the *original* patch to offer the copies — they join it,
+and re-editing it then takes them with it. That is mirroring something that
+isn't symmetric, which is a user error the adoption rule degrades on rather
+than a case to defend against; `tests/test_mirror.py` builds the symmetric part
+deliberately and says why.
+
+**A modal on top of the session modal is how the axis prompt avoids a
+collision.** `X` in `ADJUST` deletes a patch, and a modal handler sits *above*
+the keymap `Alt+X` is bound in — so the session modal now requires a bare `X`
+(no alt/shift/ctrl), and once `RETOP_OT_mirror` is armed it sees the axis keys
+first anyway. The prompt cancels on anything that isn't an axis: an armed
+prompt nobody can get out of is worse than one that gives up easily. Modifier
+*releases* are ignored, or letting go of Alt would cancel it before it started.
+
+## Hand-editing the result (`tweak.py`)
+
+Sometimes the generators get a boundary wrong — a side whose neighbour could
+not be matched, two boundaries that ended up one vertex apart, a merge that did
+not take — and the fix is a few vertex moves and one extra edge. Every tool for
+that already exists in Blender, and **all of them are Edit Mode operators**:
+merge by distance, vertex snapping, knife, loop cut, connect-vertex-path. There
+is no version of this that stays in Object Mode; an object-mode
+reimplementation would be a worse knife and a worse snap, written twice.
+
+So `Tab` from the `PATCH` phase hands the viewport over. `enter_tweak` selects
+`<Source>_Retop`, makes it active, snapshots the tool settings and replaces
+them with what manual retopology wants, and enters Edit Mode; the phase becomes
+`TWEAK` and `_modal_tweak` passes **everything** through except the `Tab` that
+ends the trip. Blender's own keys are the feature: `K` knife, `Ctrl+R` loop
+cut, `J` connect, `G` move, `Ctrl+Tab` select mode. The addon owns only the two
+ends of the trip, and each is there for a reason:
+
+- **The setup.** Vertex snapping with `use_snap_self` **on** — the whole point
+  is dragging a vertex onto its twin in the *same* mesh, which Blender's
+  default (other objects only) makes impossible — plus auto-merge at
+  `tweak_merge_distance`, so closing a seam is a drag rather than a drag
+  followed by a Merge by Distance that gets forgotten once and leaves a crack
+  nobody sees until export. `tweak_snap_surface` adds `FACE_NEAREST` so a
+  dragged vertex stays on the CAD surface. Settings are read on the way **in**,
+  so changing one mid-edit does nothing until the next trip; the panel says so.
+- **The repair** (`mesh_build.repair_manual_edits`), because Blender knows
+  nothing about this addon's attributes and the two it gets wrong are the two
+  read back later. A knife cut leaves faces carrying `NO_PATCH` — the patch
+  then reads as partly "never retopped" and a re-edit stacks a second grid on
+  it — and vertices that *inherited* a neighbour's `retop_source_vid`, i.e.
+  claim to be a CAD corner they are nowhere near, which the next commit would
+  weld onto that corner by identity. Faces go back through
+  `adopt_untracked_faces`; ids go through `clear_stray_source_ids`.
+
+**A stray source id is decided three ways, and "it moved" is the weakest.**
+Out of range for the source mesh is certain (an interpolated int between two
+real ids is not an index). Two vertices naming the same source vertex is
+certain too — one CAD corner is one result vertex — and the nearer one keeps
+it. Distance alone only fires past `STRAY_SOURCE_ID_RATIO` of the model's
+bounding box, deliberately generous: **nudging a corner by hand is what this
+mode is for**, and stripping its identity for having moved a hair would undo
+the fix on the next commit that touched it. Clearing is always the safe
+direction — a vertex with no id welds by proximity like every other boundary
+point, which is what a hand-placed vertex should do.
+
+**The tool settings are the user's, and every exit path restores them**:
+`restore_tool_settings` is called by a failed `enter_tweak`, by `exit_tweak`,
+and by `end_session`. The snapshot lives on a scene property rather than a
+module global so an addon reload mid-edit doesn't lose it. It is JSON, so sets
+(`snap_elements`) and `bpy_prop_array`s (`mesh_select_mode`) round trip through
+`_jsonable`; every key is read and written through `getattr`/`setattr`, since
+`snap_elements` and friends have been renamed and split more than once across
+Blender versions and a missing name must be skipped symmetrically in both
+directions.
+
+**Only from `PATCH`, and that is not a convenience.** A re-edit has the
+patch's faces *out* of the result mesh with only a snapshot datablock to put
+them back, and anything written to a mesh Blender holds in Edit Mode is
+discarded on exit — the patch would be gone for good. That is the same rule
+`_leave_for_other_mode` already enforces for the reverse direction, and
+`can_tweak` is where the key and the panel button both read it, so they refuse
+with the same reason instead of one of them silently doing nothing.
+
+**The trip has to be closed even when Tab didn't close it.** Leaving Edit Mode
+by the mode dropdown, by a script or by an undo fires no event of its own, so
+the `TWEAK` dispatch sits *before* the `TIMER` early-out in `_modal` and
+`_modal_tweak` checks `context.mode` first: the repair runs once per trip
+whichever way the trip ended. `Ctrl+Tab` is deliberately left to Blender (the
+select-mode pie, used constantly while retopping), and the modal cursor is
+*restored* rather than set in this phase — a cursor pinned on the window would
+sit on top of the knife's own.
+
 ## Seeing the CAD structure (`cad_display.py`)
 
 The bridge sends a triangle soup, so a Plasticity import reads as one
@@ -758,13 +1089,33 @@ A non-band annulus draws its outer loop only, for the same reason
 
 Everything is cached on the same fingerprint as `patch_data.analyse`, per
 `(product, face id)`. A draw handler runs on every redraw and may not walk a
-mesh. Both displays are drawn with `depth_test_set('NONE')` — they lie *on* the
-surface, so testing them against it is a coin flip per pixel — and as **one
-LINES batch each**, since a CAD part has hundreds of edges and a draw call
-apiece is what turns an overlay into a stutter.
+mesh. Both displays are drawn as **one LINES batch each**, since a CAD part has
+hundreds of edges and a draw call apiece is what turns an overlay into a
+stutter.
+
+**Whether they draw through the model is `cad_display_xray`, on by default.**
+Through is what makes a whole part's layout readable at a glance; off is what
+makes a *curved or enclosed* one readable, because the far side stops showing
+through the near side. The reason it was `depth_test_set('NONE')`
+unconditionally still holds, though: the lines lie exactly *on* the surface
+they describe, so depth-testing them against it is a coin flip per pixel and
+they come out as a stipple. `_towards_viewer` is the answer — every point is
+nudged along the view axis by `DEPTH_NUDGE` of its distance to the viewpoint,
+proportional for the same reason the raycast's step past a hit is (a fixed
+epsilon is either too small to clear the surface at range or big enough to lift
+a line off a small part visibly). One view direction for the whole batch, not a
+per-point eye vector: at that magnitude the difference at the edge of frame is
+far below a pixel, and a draw handler has no business normalising a vector per
+point. It reads the region's own matrix, so the handler still imports nothing
+it didn't already.
+
+The **B-rep vertex dots stay on top regardless**: they are screen-space quads
+(POST_PIXEL), so there is no depth to test them against. Said in the property
+description rather than left to be noticed.
 
 `E` toggles the edges, `Ctrl+E` the flow, in every session phase: the structure
-is read while *choosing* a surface as much as while adjusting one.
+is read while *choosing* a surface as much as while adjusting one. Both are
+remappable — see `keymap.py`.
 
 ## Status
 
@@ -781,8 +1132,13 @@ pointing at it (`M`) or automatically, for every generator and confined to the
 faces the side actually borders; pinning a side to its own CAD tessellation
 (`Ctrl`+click); corner ranking, which keeps a quad a quad when the angle test
 also flags a tessellated curve; the Plasticity edge / B-rep vertex / surface
-flow overlay (`E`, `Ctrl`+`E`); and a per-mesh cache under all of it, without
-which none of the above is affordable on every hover.
+flow overlay (`E`, `Ctrl`+`E`); the hand-edit round trip into Blender's Edit
+Mode (`Tab` from `PATCH`), set up for retopology and repaired on the way back;
+symmetry as a Mirror modifier planed on the source origin (`Alt+X` then an
+axis, with an Apply that keeps re-editing safe); every key as a real
+`KeyMapItem`, edited in Blender's own rows on the addon preferences page; and a
+per-mesh cache under all of it, without which none of the above is affordable
+on every hover.
 
 Not implemented yet: **N-gon on a face with several holes** (the pipeline
 truncates past two loops, so only one bridge pair is ever possible),

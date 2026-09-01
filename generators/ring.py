@@ -11,10 +11,14 @@ Both are filled the same way -- a ring of quads running around the patch
 "across"). Unlike the other generators this one is never chosen by side count;
 `operators` picks it when a patch turns out to have two boundary loops.
 
+How the two loops are paired against each other is what decides whether the
+rungs run straight across the band or all lean by the same small angle; see
+the note above `phase_align`.
+
 Two things it deliberately does NOT do yet, both inherited from the single
-shared span model: the two loops are matched by arc length, not by pairing
-their corners, so a hole shaped very differently from the outer boundary gives
-a distorted band (splitting the face in Plasticity is the better answer there);
+shared span model: the loops are matched by arc length, not by pairing their
+corners, so a hole shaped very differently from the outer boundary gives a
+distorted band (splitting the face in Plasticity is the better answer there);
 and spans are not propagated *into* a ring from its neighbours, since "around"
 is one number for the whole loop rather than a per-side one. Spans are still
 propagated *out* of it, per side (see operators' commit path).
@@ -166,6 +170,151 @@ def around_count(loops: list[Loop], span_u: int) -> int:
     return max(int(span_u), len(loops[0]), len(loops[1]), 3)
 
 
+# --- pairing the two loops --------------------------------------------------
+#
+# Every rung of the band runs from outer[i] to inner[i], so how the two loops
+# are indexed against each other *is* the shape of the quads. Two things have
+# to be recovered: the direction (a hole winds the opposite way from the face's
+# outer boundary) and where inner[0] sits.
+#
+# `align_rings` searches whole indices, which is all it can do once both loops
+# are resampled -- and that leaves up to half a step of rotation unaccounted
+# for. On an annulus that residue is not noise: it is a *constant* skew, the
+# same small angle on every rung, which is precisely the "the edges aren't
+# straight across" look. Half a step of 64 is about 2.8 degrees.
+#
+# `phase_align` fixes it by choosing where the inner loop is *sampled from*
+# rather than which sample to start at, so the residue goes to zero. It is only
+# safe on a loop with no corners of its own: a corner is an untouched source
+# vertex welded by identity, and moving one while keeping its name would make a
+# later patch reuse a vertex that is no longer there. A cornerless rim has no
+# such name to keep -- its start is wherever the half-edge walk happened to
+# begin, which nothing else in the model agrees on anyway.
+
+
+def closed_points(side: list[mathutils.Vector]) -> list[mathutils.Vector]:
+    """A closed side's points without the repeated closing vertex."""
+    if len(side) > 1 and (side[0] - side[-1]).length < 1e-9:
+        return list(side[:-1])
+    return list(side)
+
+
+def _segment_lengths(points: list[mathutils.Vector]) -> list[float]:
+    """Length of every segment of the closed polyline, last wrapping to first."""
+    n = len(points)
+    return [(points[(i + 1) % n] - points[i]).length for i in range(n)]
+
+
+def closest_arclength(points: list[mathutils.Vector], target: mathutils.Vector) -> float:
+    """How far along the closed polyline the point nearest `target` sits."""
+    n = len(points)
+    best_distance = None
+    best_at = 0.0
+    travelled = 0.0
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        segment = (b - a).length
+        if segment > 1e-12:
+            factor = (target - a).dot(b - a) / (segment * segment)
+            factor = min(1.0, max(0.0, factor))
+        else:
+            factor = 0.0
+        distance = (target - a.lerp(b, factor)).length
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_at = travelled + factor * segment
+        travelled += segment
+    return best_at
+
+
+def rotate_closed(
+    points: list[mathutils.Vector], distance: float
+) -> list[mathutils.Vector]:
+    """The same closed polyline, starting `distance` along it.
+
+    Resampling anchors on the first point, so rotating the input is how a
+    phase is applied -- there is nothing to add to `resample_polyline_by_arclength`.
+    """
+    lengths = _segment_lengths(points)
+    total = sum(lengths)
+    if total <= 1e-12:
+        return list(points)
+    distance %= total
+
+    n = len(points)
+    travelled = 0.0
+    for i in range(n):
+        if travelled + lengths[i] >= distance - 1e-12:
+            remainder = distance - travelled
+            factor = remainder / lengths[i] if lengths[i] > 1e-12 else 0.0
+            start = points[i].lerp(points[(i + 1) % n], factor)
+            rest = [points[(i + 1 + k) % n] for k in range(n)]
+            # Drop a wrapped point that lands on the new start, or the resample
+            # sees a zero-length segment where the seam used to be.
+            if rest and (rest[-1] - start).length < 1e-9:
+                rest = rest[:-1]
+            return [start] + rest
+        travelled += lengths[i]
+    return list(points)
+
+
+def phase_align(
+    outer: list[mathutils.Vector],
+    inner_loop: list[mathutils.Vector],
+    count: int,
+    samples: int = 24,
+) -> list[mathutils.Vector]:
+    """Resample `inner_loop` into `count` points, each facing its outer partner.
+
+    The phase is read off the geometry rather than searched: for each outer
+    point, the arc-length of the nearest point on the inner loop says where
+    that rung *wants* to land, and the offset it implies is
+    `t_i - i * L / count`. Those offsets agree to within noise on a real band,
+    so their circular mean is the phase -- circular because they live on a
+    loop, where 0 and L are the same answer and a plain average of values
+    either side of the seam lands halfway round.
+
+    Both directions are tried: a hole winds the opposite way from the outer
+    boundary, and the nearest-point map cannot tell which way round it is.
+    """
+    if len(inner_loop) < 3 or count < 3:
+        return []
+
+    best = None
+    for candidate in (inner_loop, list(reversed(inner_loop))):
+        lengths = _segment_lengths(candidate)
+        total = sum(lengths)
+        if total <= 1e-12:
+            continue
+
+        step = max(1, len(outer) // samples)
+        accumulated = mathutils.Vector((0.0, 0.0))
+        for i in range(0, len(outer), step):
+            at = closest_arclength(candidate, outer[i])
+            offset = (at - i * total / len(outer)) % total
+            angle = 2.0 * math.pi * offset / total
+            accumulated += mathutils.Vector((math.cos(angle), math.sin(angle)))
+
+        if accumulated.length < 1e-9:
+            # The offsets cancelled out: no phase is better than another, which
+            # means this is not a band the map can read. Leave it at zero and
+            # let the cost below decide between the two directions.
+            phase = 0.0
+        else:
+            phase = (math.atan2(accumulated.y, accumulated.x)
+                     % (2.0 * math.pi)) / (2.0 * math.pi) * total
+
+        rotated = rotate_closed(candidate, phase)
+        points = geometry.resample_polyline_by_arclength(
+            rotated + [rotated[0]], count + 1)[:-1]
+        cost = sum((outer[i] - points[i]).length
+                   for i in range(0, len(outer), step))
+        if best is None or cost < best[0]:
+            best = (cost, points)
+
+    return best[1] if best else []
+
+
 def align_rings(
     outer: list[mathutils.Vector], inner: list[mathutils.Vector]
 ) -> tuple[list[mathutils.Vector], dict[int, int]]:
@@ -244,12 +393,28 @@ class RingGenerator(Generator):
         around = around_count(loops, span_settings.get("span_u", 1))
 
         outer, outer_corners, outer_alloc = ring_from_sides(outer_sides, around)
-        inner, inner_corners, inner_alloc = ring_from_sides(inner_sides, around)
         n = len(outer)
-        if n < 3 or len(inner) != n:
+        if n < 3:
             raise ValueError("Ring patch boundary is degenerate")
 
-        inner, inner_position_of = align_rings(outer, inner)
+        # A hole with corners of its own has to keep them: they are untouched
+        # source vertices, welded to neighbouring patches by identity. A
+        # cornerless rim has no such name -- its start is wherever the
+        # half-edge walk began -- so it is free to be sampled from wherever
+        # makes the rungs run straight across. See the note above phase_align.
+        inner_cornerless = len(inner_sides) == 1
+        phased = (phase_align(outer, closed_points(inner_sides[0]), n)
+                  if inner_cornerless else [])
+
+        if phased:
+            inner = phased
+            inner_corners, inner_alloc = [0], [n]
+            inner_position_of = {i: i for i in range(n)}
+        else:
+            inner, inner_corners, inner_alloc = ring_from_sides(inner_sides, around)
+            if len(inner) != n:
+                raise ValueError("Ring patch boundary is degenerate")
+            inner, inner_position_of = align_rings(outer, inner)
 
         verts = []
         uvs = []
@@ -258,9 +423,19 @@ class RingGenerator(Generator):
             # Annulus UVs: the ring closes on itself in UV space too, so the
             # seam column isn't stretched the way a flat u=i/n layout would be.
             radius = 1.0 - 0.6 * t
+            # Boundary rows are normally left exactly where the loops put them:
+            # they are samples of the real boundary, and moving them would move
+            # them off whatever a neighbouring patch welds to. A *phased* rim
+            # is the exception. Its points no longer land on source vertices --
+            # that is the whole point of the phase -- so on a curved rim every
+            # one of them sits mid-chord, a sagitta inside the true surface.
+            # They are not shared with anything either (their corner id was
+            # dropped for the same reason), so they get the same reprojection
+            # the interior does.
+            reproject = 0 < r < across or (phased and r == across)
             for i in range(n):
                 point = outer[i].lerp(inner[i], t)
-                if 0 < r < across and bvh is not None:
+                if reproject and bvh is not None:
                     hit = bvh.find_nearest(point)
                     if hit and hit[0] is not None:
                         point = hit[0]
@@ -282,7 +457,15 @@ class RingGenerator(Generator):
         # Corners first of the outer loop then of the hole, matching the order
         # operators._prepare_patch collects their source vertex ids in.
         corner_local_indices = [index_of(0, c) for c in outer_corners]
-        corner_local_indices += [index_of(across, inner_position_of[c]) for c in inner_corners]
+        if not phased:
+            corner_local_indices += [index_of(across, inner_position_of[c])
+                                     for c in inner_corners]
+        # A phased rim's points sit wherever the alignment put them, so none of
+        # them *is* the source vertex the loop started at. The list is simply
+        # left short: the caller zips it against corner_source_ids, so the
+        # hole's id is dropped rather than stamped onto a point that moved --
+        # which would make a later patch weld to a vertex that isn't there.
+        # It welds by proximity like every other boundary point instead.
 
         boundary_local_indices = [index_of(0, i) for i in range(n)]
         boundary_local_indices += [index_of(across, i) for i in range(n)]
