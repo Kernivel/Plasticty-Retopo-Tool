@@ -6,5 +6,6 @@ __pycache__/
 # JetBrains IDE settings
 .idea/
 
-# Plasticity editor autosaves next to the fixture source
-*_autosave.plasticity
+# Plasticity's own backup folder next to the fixture source: autosave, hourly
+# and daily copies. The deliberate save is tests/fixtures/TestCases.plasticity.
+tests/fixtures/plasticity/
