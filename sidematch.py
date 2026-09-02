@@ -192,6 +192,10 @@ def build_side_references(
          for loop_sides in prepared.loops_sides for side in loop_sides),
         default=0.0)
 
+    # Every side of the patch, so each match can be confined to the side it is
+    # actually nearest -- see the `rivals` argument below.
+    all_sides = [side for loop_sides in prepared.loops_sides for side in loop_sides]
+
     references = []
     index = 0
     for loop_i, loop_sides in enumerate(prepared.loops_sides):
@@ -203,12 +207,21 @@ def build_side_references(
             pool = _match_pool(committed, neighbours, face_id)
 
             source_points = generators.ngon.side_points(side, state.ngon_angle)
+            # Two answers, two reaches -- but *one* idea of what makes two
+            # points the same vertex. The strict tolerance is that idea (it is
+            # the weld distance), and the generous one is only about how far
+            # off the side a neighbour may have drifted; deduping the generous
+            # answer at its own reach merges consecutive neighbour vertices and
+            # halves the count a pin reproduces.
+            strict = mesh_build.side_match_tolerance(
+                state, side, reference_length=reference_length)
+            rivals = [other for other in all_sides if other is not side]
             match_points, reason = mesh_build.match_side_to_points(
                 pool, side, mesh_build.side_match_tolerance(
-                    state, side, margin=True, reference_length=reference_length))
+                    state, side, margin=True, reference_length=reference_length),
+                merge=strict, rivals=rivals)
             strict_points, _strict_reason = mesh_build.match_side_to_points(
-                pool, side, mesh_build.side_match_tolerance(
-                    state, side, reference_length=reference_length))
+                pool, side, strict, merge=strict, rivals=rivals)
             if not pool:
                 reason = _empty_pool_reason(neighbours, committed, face_id)
             references.append(SideReference(
@@ -284,7 +297,12 @@ def clear_side_references() -> None:
 # so keeping a stale copy of it could only ever disagree.
 PIN_NEIGHBOUR = "N"  # follow the committed patch across this side
 PIN_SOURCE = "S"     # follow the CAD tessellation of this side itself
-PIN_KINDS = (PIN_NEIGHBOUR, PIN_SOURCE)
+# "Leave this side alone" -- and it has to be recorded, not merely absent.
+# Automatic matching is on by default, so releasing a pin puts the automatic
+# match straight back and the side stays green: clicking a matched side looked
+# like it did nothing at all. This is what the click actually means.
+PIN_EXCLUDED = "-"
+PIN_KINDS = (PIN_NEIGHBOUR, PIN_SOURCE, PIN_EXCLUDED)
 
 
 def side_override_map(state: "state_mod.RetopPatchState") -> dict[int, str]:
@@ -365,6 +383,8 @@ def _match_candidates(
     candidates = []
     for reference in references:
         kind = pins.get(reference.index)
+        if kind == PIN_EXCLUDED:
+            continue  # asked for by hand; automatic matching does not override it
         if kind == PIN_SOURCE:
             points = reference.source_points
         elif kind == PIN_NEIGHBOUR:
@@ -523,14 +543,17 @@ def status_of(
     """
     who = (f"patch {reference.neighbour}" if reference.neighbour is not None
            else "the committed neighbour")
-    pinned = " (pinned)" if pin_kind else ""
+    pinned = " (pinned)" if pin_kind and pin_kind != PIN_EXCLUDED else ""
 
     if reference.applied:
         if pin_kind == PIN_SOURCE:
             return ("Selected for surface matching",
                     "follows this edge's own CAD tessellation (pinned)")
         return ("Selected for surface matching",
-                f"reproduces {who}'s vertices{pinned}")
+                f"reproduces {who}'s vertices{pinned} — click to release")
+    if pin_kind == PIN_EXCLUDED:
+        return ("Not selected for surface matching",
+                "released by hand — click to match it again")
     if reference.outvoted:
         return ("Not selected for surface matching",
                 "another side drives the same span, or the span was typed by hand")

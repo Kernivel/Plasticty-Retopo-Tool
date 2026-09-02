@@ -1,4 +1,3 @@
-import json
 from typing import TYPE_CHECKING
 
 import bpy
@@ -314,6 +313,9 @@ def _draw_match_block(
     pinned = _pinned_sides(state)
     if pinned:
         box.label(text=f"{len(pinned)} side(s) matched by hand", icon='CHECKMARK')
+    released = _released_sides(state)
+    if released:
+        box.label(text=f"{len(released)} side(s) released by hand", icon='X')
 
     if state.match_conflicts and state.generator_name != constants.NGON:
         # A grid has one span per *direction*, so two sides wanting different
@@ -325,14 +327,20 @@ def _draw_match_block(
         note.label(text="A grid has one span per direction.")
 
 
-def _pinned_sides(state: "state_mod.RetopPatchState") -> list[str]:
-    """Flat side indices the user has matched by hand on this patch."""
-    if not state.side_overrides:
-        return []
-    try:
-        return sorted(json.loads(state.side_overrides))
-    except ValueError:
-        return []
+def _pinned_sides(state: "state_mod.RetopPatchState") -> list[int]:
+    """Flat side indices the user has matched by hand on this patch.
+
+    Not the released ones: an entry saying "leave this side alone" is stored the
+    same way, and counting it as a hand-matched side would report the opposite
+    of what the user just did.
+    """
+    return sorted(index for index, kind in sidematch.side_override_map(state).items()
+                  if kind != sidematch.PIN_EXCLUDED)
+
+
+def _released_sides(state: "state_mod.RetopPatchState") -> list[int]:
+    return sorted(index for index, kind in sidematch.side_override_map(state).items()
+                  if kind == sidematch.PIN_EXCLUDED)
 
 
 def _draw_matching_settings(

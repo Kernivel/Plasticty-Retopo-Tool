@@ -209,6 +209,14 @@ def adopt_side_reference(
     yet, and it is what keeps a feature the even resampling would cut across.
     Given no `kind`, the neighbour is preferred and the source is the fallback.
 
+    **A click on a side that is already being matched turns the match off**
+    (`sidematch.PIN_EXCLUDED`), rather than merely releasing the pin. Releasing
+    is what this used to do, and with automatic matching on -- which is the
+    default -- the automatic match put itself straight back on the next
+    regeneration: the side stayed green and the click read as broken. Clicking
+    an excluded side matches it again, so the gesture is a plain two-state
+    toggle: matched or not.
+
     Returns the SideReference that was pinned, or None if it can't be.
     """
     state = context.scene.plasticity_retop
@@ -225,8 +233,13 @@ def adopt_side_reference(
         return None
 
     overrides = sidematch.side_override_map(state)
-    if overrides.get(flat_index) == kind:
-        overrides.pop(flat_index)  # clicking the same side again releases it
+    current = overrides.get(flat_index)
+    if current == sidematch.PIN_EXCLUDED:
+        overrides[flat_index] = kind          # released before: match it again
+    elif current == kind or (current is None and reference.applied
+                             and kind == sidematch.PIN_NEIGHBOUR):
+        # Clicking what is already being matched, however it came to be matched.
+        overrides[flat_index] = sidematch.PIN_EXCLUDED
     else:
         overrides[flat_index] = kind
     sidematch.store_side_overrides(state, overrides)
@@ -1037,6 +1050,8 @@ def _match_report(
     """What a click on a side just did, in the status bar."""
     pins = sidematch.side_override_map(state)
     kind = pins.get(reference.index)
+    if kind == sidematch.PIN_EXCLUDED:
+        return f"Side {reference.in_loop} released -- not matched"
     if kind is None:
         return f"Side {reference.in_loop} released"
     if kind == sidematch.PIN_SOURCE:

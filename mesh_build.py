@@ -1782,12 +1782,39 @@ def match_side_to_points(
     pool: list[mathutils.Vector],
     side_points: list[mathutils.Vector],
     tolerance: float,
+    merge: float | None = None,
+    rivals: "list[list[mathutils.Vector]] | None" = None,
 ) -> tuple[list[mathutils.Vector] | None, str]:
     """Which of `pool` lie along this side, in order, or (None, reason).
+
+    `tolerance` is how far off the side a committed vertex may sit and still
+    count as being on it. `merge` is a different question with a different
+    answer: how close two of them have to be to be *the same vertex*, owned by
+    two patches at once. It defaults to `tolerance`, which is right only while
+    the two are the same number.
+
+    They are not, for a pinned side: the picker's margin is a share of the
+    patch's longest side, and on a ring that is a whole rim, so the margin ends
+    up far wider than the neighbour's own vertex spacing. Deduping at that
+    distance then merges *consecutive* neighbour vertices -- 61 points came
+    back as 31 -- and the side is handed half the count it should reproduce,
+    which is the zigzag band in the report. A pin must reach further off the
+    side than an automatic match without ever becoming blinder along it.
+
+    `rivals` are the patch's *other* sides, and a candidate nearer to one of
+    them than to this one belongs to that side, not this one -- however well
+    inside the tolerance it sits. Without that, a pin on a narrow band reached
+    across it and took the neighbour's far row as well as the near one (61
+    points came back as 117), which reads as the match spreading over the whole
+    surface instead of following the edge under the cursor. A shared corner is
+    equally near both sides, so the test is by a clear `merge` margin and keeps
+    it.
 
     `reason` says which check refused -- an opaque "nothing to match" on a side
     that visibly touches a retopologized neighbour is impossible to act on.
     """
+    if merge is None:
+        merge = tolerance
     if len(side_points) < 2:
         return None, "side has no length"
     if len(pool) < 2:
@@ -1796,10 +1823,17 @@ def match_side_to_points(
     found = []
     for point in pool:
         distance, at = _distance_to_polyline(point, side_points)
-        if distance <= tolerance:
-            found.append((at, point))
+        if distance > tolerance:
+            continue
+        if rivals and any(_distance_to_polyline(point, other)[0] < distance - merge
+                          for other in rivals):
+            continue  # it lies along another side of this patch, not this one
+        found.append((at, distance, point))
     if not found:
         return None, "no committed neighbour"
+
+    found = _nearest_row(found, merge)
+    found = [(at, point) for at, _distance, point in found]
     if len(found) < 2:
         # One point is not something to follow: a side shorter than the
         # neighbour's own vertex spacing has nothing to match along it, and
@@ -1809,10 +1843,12 @@ def match_side_to_points(
     found.sort(key=lambda item: item[0])
 
     # Drop duplicates at the same place along the side -- two patches meeting
-    # here both own the corner vertex.
+    # here both own the corner vertex. At `merge`, never at `tolerance`: two
+    # copies of one welded vertex are coincident, while two *different* ones
+    # are a segment apart and must both survive.
     ordered = [found[0][1]]
     for _at, point in found[1:]:
-        if (point - ordered[-1]).length > tolerance:
+        if (point - ordered[-1]).length > merge:
             ordered.append(point)
     if len(ordered) < 2:
         return None, "no committed neighbour"
@@ -1825,6 +1861,7 @@ def match_side_to_points(
     if (side_points[0] - side_points[-1]).length <= tolerance:
         return _close_matched_ring(ordered, side_points, tolerance)
 
+
     # Endpoint coverage: without it a neighbour touching part of the side hands
     # back a count that cannot line up along the rest -- the silent half-cell
     # offset this exists to prevent.
@@ -1834,6 +1871,35 @@ def match_side_to_points(
         return None, "neighbour stops short of this side's end"
 
     return ordered, ""
+
+
+def _nearest_row(
+    found: "list[tuple[float, float, mathutils.Vector]]", merge: float
+) -> "list[tuple[float, float, mathutils.Vector]]":
+    """Keep the row of candidates lying *on* the side, drop the next one back.
+
+    A neighbour patch is a grid, so it has a second row of vertices a cell
+    behind the one it shares -- and a pinned side's reach is a share of the
+    patch's longest side, which on a narrow band is far wider than that cell.
+    Both rows then came back (58 points became 116) and the side was asked to
+    reproduce a zigzag between them: that is the match "spreading over the
+    surface" instead of following the edge under the cursor.
+
+    Told apart by a *gap*, never by an absolute distance. Within one row the
+    distances vary smoothly -- that variation is the drift the margin exists to
+    reach -- so the row is however far the numbers keep climbing gently, and a
+    second row announces itself with a jump bigger than everything the first
+    one has varied by. Which makes the rule self-scaling: no constant here says
+    how far a neighbour may have drifted, only that a step much larger than the
+    drift so far is not drift.
+    """
+    ordered = sorted(found, key=lambda item: item[1])
+    for i in range(1, len(ordered)):
+        gap = ordered[i][1] - ordered[i - 1][1]
+        spread = ordered[i - 1][1] - ordered[0][1]
+        if gap > max(2.0 * merge, 2.0 * spread):
+            return ordered[:i]
+    return ordered
 
 
 # What "covers the whole loop" means for a closed side. A gap has to be both a

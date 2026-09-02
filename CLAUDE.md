@@ -733,6 +733,27 @@ point that has moved would make a later patch reuse a vertex somewhere else, or
 drag this one onto it. It welds by proximity instead, like every other boundary
 point.
 
+**How far a match reaches off a side is not how close two vertices have to be
+to be the same one.** Both were `tolerance`, and on a real part the two numbers
+cross: the picker's margin is a share of the *patch's longest side*, which on a
+ring is a whole rim, so deduping at that distance merged the neighbour's own
+consecutive vertices — 61 points came back as 31, and the side was asked to
+reproduce half the count it should have. `match_side_to_points` takes `merge`
+separately, and every caller passes the strict tolerance for it: two copies of
+one welded vertex are coincident, two different ones are a segment apart.
+
+**And a neighbour's second row is not the edge under the cursor.** A committed
+patch is a grid, so there is another row of its vertices one cell behind the
+one it shares; on a narrow band that row is well inside a pinned side's reach,
+and taking both rows is what "the match spreads over the surface instead of
+following the edge I pointed at" looks like. Two rules keep it out.
+`rivals` — the patch's other sides — drops a candidate that is nearer to one of
+them than to this side, which is what settles a band's two rims. And
+`_nearest_row` cuts the rest by a **gap**: within one row the distances vary
+smoothly (that variation *is* the drift the margin exists to reach), so a step
+larger than everything the row has varied by so far is a different row. No
+constant says how far a neighbour may drift — only that a jump is not drift.
+
 **A side may only match the faces it actually borders.** This used to be pure
 proximity — one pool of every committed vertex in the result mesh, keep
 whatever falls within the tolerance — and proximity cannot tell "the patch
@@ -784,13 +805,21 @@ put its own count straight back every regeneration and the control looked
 broken. Changing the count away from the neighbour's is how you say "don't weld
 here"; a pin is immune, because it was asked for.
 
-**Two kinds of pin.** `PIN_NEIGHBOUR` follows the committed patch across the
+**A click on a matched side turns the match off.** It used to release the
+*pin*, which with automatic matching on — the default — is invisible: the
+automatic match put itself straight back on the next regeneration and the side
+stayed green, so the click read as broken. `PIN_EXCLUDED` records "leave this
+side alone" and `_match_candidates` honours it over the automatic pass, making
+the gesture a plain two-state toggle. Clicking an excluded side matches it
+again.
+
+**Three kinds of pin.** `PIN_NEIGHBOUR` follows the committed patch across the
 side. `PIN_SOURCE` (Ctrl+click) follows the side's **own CAD tessellation**,
 thinned by curvature with the same rule n-gon mode uses — no neighbour needed,
 so it works on the first patch of a model and on any side facing nothing yet.
-`state.side_overrides` stores the *kind*, not the count: the count is recomputed
-from live geometry every regeneration, so a stored copy could only disagree.
-Clicking a side that already carries that pin releases it.
+`PIN_EXCLUDED` is the third, above. `state.side_overrides` stores the *kind*,
+not the count: the count is recomputed from live geometry every regeneration,
+so a stored copy could only disagree.
 
 Every refusal carries a `reason`, surfaced in the click warning and the panel,
 and the viewport **brightens a side's own colour on hover** rather than

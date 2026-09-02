@@ -187,6 +187,23 @@ check("a side that is not being matched is not drawn green",
 check("and the matched one is drawn heavier",
       matched_width > pr.overlay.SIDE_WIDTH, matched_width)
 
+# The report: clicking a matched side to unmatch it left it green and gave a
+# strange grid. Releasing the pin was all the click did, and automatic matching
+# put the match straight back on the very next regeneration.
+pr.operators.adopt_side_reference(bpy.context, shared.index)
+preview = bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME)
+released = next(r for r in pr.sidematch.active_sides() if r.index == shared.index)
+check("clicking a matched side stops it being matched", not released.applied)
+check("and the grid goes back to its own spacing",
+      shared_boundary_xs(preview) != committed_xs, shared_boundary_xs(preview))
+
+pr.operators.adopt_side_reference(bpy.context, shared.index)
+preview = bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME)
+rematched = next(r for r in pr.sidematch.active_sides() if r.index == shared.index)
+check("clicking it once more matches it again", rematched.applied)
+check("landing back on the neighbour's vertices",
+      shared_boundary_xs(preview) == committed_xs, shared_boundary_xs(preview))
+
 lonely = next(r.index for r in references if not r.available)
 check("a side with no committed neighbour cannot be pinned to one",
       pr.operators.adopt_side_reference(
@@ -200,10 +217,22 @@ check("and can be pinned to the source topology instead",
 check("which is recorded as a source pin",
       json.loads(state.side_overrides).get(str(lonely)) == pr.sidematch.PIN_SOURCE,
       state.side_overrides)
+# Clicking it again turns the match *off* rather than merely dropping the pin.
+# Dropping it is what this used to do, and with automatic matching on -- the
+# default -- the automatic match put itself straight back on the next
+# regeneration: the side stayed green and the click read as broken.
 pr.operators.adopt_side_reference(bpy.context, lonely, pr.sidematch.PIN_SOURCE)
-check("and clicking it again releases it",
-      str(lonely) not in json.loads(state.side_overrides or "{}"),
+check("and clicking it again releases it, explicitly",
+      json.loads(state.side_overrides).get(str(lonely)) == pr.sidematch.PIN_EXCLUDED,
       state.side_overrides)
+check("which is what stops automatic matching taking it back",
+      lonely not in {r.index for r in pr.sidematch.active_sides() if r.applied},
+      state.side_overrides)
+pr.operators.adopt_side_reference(bpy.context, lonely, pr.sidematch.PIN_SOURCE)
+check("and clicking a released side matches it again",
+      json.loads(state.side_overrides).get(str(lonely)) == pr.sidematch.PIN_SOURCE,
+      state.side_overrides)
+pr.operators.adopt_side_reference(bpy.context, lonely, pr.sidematch.PIN_SOURCE)
 check("nor can an index that isn't a side",
       pr.operators.adopt_side_reference(bpy.context, 99) is None)
 check("nor can -1, which is what 'nothing hovered' looks like",
@@ -396,6 +425,42 @@ state.match_margin = 5.0
 generous = pr.mesh_build.side_match_tolerance(state, straight, margin=True)
 check("5% of a 2-unit side reaches 0.1", abs(generous - 0.1) < 1e-9, generous)
 check("and the margin only ever widens, never narrows", generous > strict)
+
+# A margin says how far *off* the side a vertex may sit. It must not also
+# become how close two of them have to be to count as one: at 5% of a 2-unit
+# side the margin is 0.1, and the neighbour's own vertices are 1 apart... but
+# on a real part the two numbers cross, and every second vertex was swallowed
+# as a duplicate -- 61 points came back as 31, which is the zigzag band in the
+# report. `merge` is that second question, answered by the weld distance.
+dense = [V((i * 0.05, 0.0, 0.0)) for i in range(41)]
+dense_side = [V((0.0, 0.0, 0.0)), V((2.0, 0.0, 0.0))]
+wide = 0.2  # wider than the neighbour's 0.05 spacing, as a real margin is
+swallowed, _reason = pr.mesh_build.match_side_to_points(dense, dense_side, wide)
+check("deduping at the margin swallows the neighbour's own vertices",
+      swallowed is not None and len(swallowed) < len(dense), len(swallowed or []))
+kept, _reason = pr.mesh_build.match_side_to_points(
+    dense, dense_side, wide, merge=strict)
+check("deduping at the weld distance keeps every one of them",
+      kept is not None and len(kept) == len(dense), len(kept or []))
+
+# And the second row of the neighbour's grid, a cell behind the shared edge,
+# is not the edge under the cursor. Only a *gap* tells them apart: within one
+# row the distances vary smoothly, which is the drift the margin exists for.
+second_row = [V((i * 0.05, 0.14, 0.0)) for i in range(41)]
+rows, _reason = pr.mesh_build.match_side_to_points(
+    dense + second_row, dense_side, wide, merge=strict)
+check("a match takes the row on the side, not the one behind it",
+      rows is not None and len(rows) == len(dense), len(rows or []))
+check("and it is the near row it kept",
+      rows is not None and all(abs(point.y) < 1e-9 for point in rows))
+
+# A single row drifted as a whole is still one row, however far it has moved:
+# the distances climb smoothly, so there is no gap to cut at.
+sagging = [V((i * 0.05, 0.02 + 0.001 * i, 0.0)) for i in range(41)]
+sagged, _reason = pr.mesh_build.match_side_to_points(
+    sagging, dense_side, wide, merge=strict)
+check("a row that drifts gradually is kept whole",
+      sagged is not None and len(sagged) == len(sagging), len(sagged or []))
 
 check("a neighbour drifted off the side is out of strict reach",
       pr.mesh_build.match_side_to_points(drifted, straight, strict)[0] is None,

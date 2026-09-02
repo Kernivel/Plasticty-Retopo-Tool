@@ -570,8 +570,10 @@ def _match_dot_sets(
             sets.append((reference.source_world, SOURCE_DOT_COLOR))
         elif kind == sidematch.PIN_NEIGHBOUR and reference.match_world:
             sets.append((reference.match_world, MATCH_DOT_COLOR))
-        elif reference.index == hovered and kind is None:
-            # Nothing pinned here yet: preview whichever set a click would take.
+        elif reference.index == hovered and kind in (None, sidematch.PIN_EXCLUDED):
+            # Nothing being matched here: preview whichever set a click would
+            # take. Including a side released by hand -- the dots are what
+            # clicking it again would bring back.
             if reference.match_world:
                 sets.append((reference.match_world, MATCH_DOT_COLOR))
             elif reference.source_world:
