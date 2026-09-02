@@ -469,6 +469,15 @@ def _generate_for_face(
         else:
             span = count
 
+    if generator.name == constants.NSIDE:
+        # An N-Side patch splits every side at its midpoint, so an odd number
+        # of segments cannot be built. Rounded here, before the spans are
+        # resolved: what the panel shows, what a match has to reproduce and
+        # what the mesh gets have to be one number rather than three -- a match
+        # asking for an odd count is then dropped by `_honours` instead of
+        # being silently resampled into a crack.
+        span = generators.nside.even_span(span)
+
     spans = {"span_u": span_u, "span_v": span_v, "span": span}
     sidematch.apply_side_matches(context, obj, prepared, generator.name, spans, winners=winners)
 

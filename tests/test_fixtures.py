@@ -144,7 +144,7 @@ EXPECTED = {
     ),
     "Cube Chamfer Edges": dict(
         source_tris=20, patches=9,
-        result_verts=44, result_faces=36,
+        result_verts=34, result_faces=31,
         faces=[
             (67894, "Quad", 4, 1),
             (67895, "Quad", 4, 1),
@@ -157,7 +157,7 @@ EXPECTED = {
             (67916, "N-Side", 5, 1),
         ],
         max_deviation_pct=9.6e-05,  # measured 0.0001%
-        open_edges=32,
+        open_edges=6,
     ),
     "Cylinder": dict(
         source_tris=320, patches=3,

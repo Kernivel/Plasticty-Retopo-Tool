@@ -12,7 +12,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 |---|---|
 | Generated | 2026-09-02 |
 | Blender | 5.1.1 |
-| Addon | 0.50.0 (2026-09-02-h) |
+| Addon | 0.52.0 (2026-09-02-j) |
 | Resolution | MID |
 | Fixture | `tests/fixtures/TestCases.blend`, 15 objects |
 
@@ -25,7 +25,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | `Carved Rounded Slot` | 156 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 172v / 131f | 0.0690% | 90 |
 | `Cone` | 188 | 2 | 2&nbsp;Quad | 682v / 612f | 13.8728% | 140 |
 | `Cube Bevel Edges` | 168 | 9 | 7&nbsp;Quad, 2&nbsp;Triangle | 762v / 721f | 0.2910% | 105 |
-| `Cube Chamfer Edges` | 20 | 9 | 8&nbsp;Quad, 1&nbsp;N-Side | 44v / 36f | 0.0001% | 32 |
+| `Cube Chamfer Edges` | 20 | 9 | 8&nbsp;Quad, 1&nbsp;N-Side | 34v / 31f | 0.0001% | 6 |
 | `Cylinder` | 320 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 1592v / 1590f | 0.0602% | 0 |
 | `Flat Loop` | 622 | 4 | 4&nbsp;Ring | 352v / 236f | 0.0737% | 232 |
 | `Loopsided Chamfers Cube` | 28 | 14 | 14&nbsp;Quad | 34v / 32f | 0.0001% | 0 |
@@ -65,7 +65,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | `Carved Rounded Slot` | 172 | 131 | 131&times;4-gon | 90 | 0 | 0 | 0 | 4 |
 | `Cone` | 682 | 612 | 612&times;4-gon | 140 | 0 | 0 | 0 | 0 |
 | `Cube Bevel Edges` | 762 | 721 | 15&times;3-gon, 706&times;4-gon | 105 | 0 | 0 | 0 | 2 |
-| `Cube Chamfer Edges` | 44 | 36 | 36&times;4-gon | 32 | 0 | 0 | 0 | 5 |
+| `Cube Chamfer Edges` | 34 | 31 | 31&times;4-gon | 6 | 0 | 0 | 0 | 7 |
 | `Cylinder` | 1592 | 1590 | 1590&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 | `Flat Loop` | 352 | 236 | 236&times;4-gon | 232 | 0 | 0 | 0 | 0 |
 | `Loopsided Chamfers Cube` | 34 | 32 | 32&times;4-gon | 0 | 0 | 0 | 0 | 8 |
@@ -85,7 +85,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | `Carved Rounded Slot` | 1.73 | 10.33 | **10.4** | 10.8° | 58.8° | 69.9° | 1.36 |
 | `Cone` | 1.12 | 2.74 | **10.5** | 30.8° | 68.2° | 84.5° | 0.60 |
 | `Cube Bevel Edges` | 1.27 | 3.61 | **9.8** | 0.0° | 39.0° | 89.5° | 0.85 |
-| `Cube Chamfer Edges` | 1.77 | 14.08 | **14.1** | 0.0° | 61.1° | 90.0° | 0.35 |
+| `Cube Chamfer Edges` | 1.12 | 5.32 | **7.0** | 0.0° | 35.3° | 45.0° | 0.28 |
 | `Cylinder` | 1.01 | 1.08 | **1.1** | 1.5° | 37.9° | 83.3° | 0.09 |
 | `Flat Loop` | 1.11 | 1.11 | **1.1** | 2.2° | 3.7° | 3.8° | 0.03 |
 | `Loopsided Chamfers Cube` | 2.21 | 7.69 | **7.7** | 0.0° | 44.0° | 44.0° | 0.50 |
@@ -116,7 +116,7 @@ Same geometry, same generator chosen for every face — only the order patches a
 
 | Object | Fixture order | Face id ascending | Face id descending |
 |---|--:|--:|--:|
-| `Cube Chamfer Edges` | 44v / 36f | 42v / 32f | 22v / 16f |
+| `Cube Chamfer Edges` | 34v / 31f | 32v / 27f | 26v / 23f |
 | `Cube Bevel Edges` | 762v / 721f | 935v / 906f | 125v / 108f |
 
 This is why the golden table in `tests/test_fixtures.py` treats generator and side count as the entries that should hold steady, and vertex and face counts as regression detectors rather than quality scores.

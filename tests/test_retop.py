@@ -255,9 +255,12 @@ gen_nside = generators.find_generator(6)
 res_hex = gen_nside.generate(hex_sides, {"span": 2})
 check("n-side output is all quads", all(len(f) == 4 for f in res_hex.faces),
       str(sorted({len(f) for f in res_hex.faces})))
+# One Coons sub-patch per *side*, not one quad per boundary vertex. That is the
+# difference between a centre of valence 6 and a centre of valence 6*span, and
+# between an interior grid and no interior at all.
+check("n-side emits one sub-patch per side at the smallest span",
+      len(res_hex.faces) == 6, f"expected 6, got {len(res_hex.faces)}")
 n_boundary = 6 * 2  # sides * span
-check("n-side emits one quad per boundary segment", len(res_hex.faces) == n_boundary,
-      f"expected {n_boundary}, got {len(res_hex.faces)}")
 check("n-side has no degenerate faces", all(len(set(f)) == 4 for f in res_hex.faces))
 check("n-side reports one corner per side", len(res_hex.corner_local_indices) == 6,
       str(res_hex.corner_local_indices))
@@ -272,6 +275,112 @@ for f in res_hex.faces:
     used.update(f)
 check("n-side leaves no orphan vertices", len(used) == len(res_hex.verts),
       f"{len(used)} used of {len(res_hex.verts)}")
+
+
+# --- N-Side: the pole, the grid, and what is shared -------------------------
+#
+# The old fill gave the centre one spoke per boundary *vertex* and put nothing
+# else inside the patch: 24 quads meeting at a point on a six-sided patch at
+# span 4, and a fill that sags between the boundary and that centre on anything
+# curved. One sub-patch per side is what fixes both.
+hex_dense = []
+for i in range(6):
+    a = hex_corners[i]
+    b = hex_corners[(i + 1) % 6]
+    hex_dense.append([a.lerp(b, t / 8.0) for t in range(9)])
+
+res_dense = gen_nside.generate(hex_dense, {"span": 4})
+half = 2
+check("a bigger span subdivides each sub-patch, not the fan",
+      len(res_dense.faces) == 6 * half * half,
+      f"expected {6 * half * half}, got {len(res_dense.faces)}")
+
+valence = {}
+for face in res_dense.faces:
+    for index in face:
+        valence[index] = valence.get(index, 0) + 1
+check("the centre's valence is the side count, not the boundary count",
+      max(valence.values()) == 6, max(valence.values()))
+
+# Shared by construction: two sub-patches meet along a whole spoke, and each
+# spoke's ends are a boundary midpoint and the centre. Any duplicate here would
+# be a seam the boundary weld never looks at, because it is interior.
+positions = [tuple(round(c, 7) for c in v) for v in res_dense.verts]
+check("no interior vertex is emitted twice",
+      len(set(positions)) == len(positions),
+      f"{len(positions) - len(set(positions))} duplicate(s)")
+
+# Odd spans cannot be built -- the midpoint has to be a vertex of the side.
+check("an odd span is rounded up to the count it can build",
+      pr.generators.nside.even_span(3) == 4
+      and pr.generators.nside.even_span(1) == 2
+      and pr.generators.nside.even_span(4) == 4)
+res_odd = gen_nside.generate(hex_dense, {"span": 3})
+check("and the generator builds that count rather than refusing",
+      len(res_odd.faces) == 6 * 2 * 2, len(res_odd.faces))
+
+
+# --- N-Side on a curved surface --------------------------------------------
+#
+# The question this was rewritten for: a five- or six-sided patch on a face
+# that is not flat. The old fill put a single centre point and one midpoint per
+# boundary segment inside the patch, so between the boundary and that centre
+# there was nothing to follow the surface with -- the fill cut the curvature
+# off as a chord. Every interior point now goes through the BVH, which is what
+# the other generators have always done.
+from mathutils.bvhtree import BVHTree as _BVHTree
+
+
+def _dome(x, y):
+    return 1.0 - 0.25 * (x * x + y * y)
+
+
+_dome_verts = []
+_dome_faces = []
+_STEPS = 40
+for iy in range(_STEPS + 1):
+    for ix in range(_STEPS + 1):
+        x = -1.5 + 3.0 * ix / _STEPS
+        y = -1.5 + 3.0 * iy / _STEPS
+        _dome_verts.append(mathutils.Vector((x, y, _dome(x, y))))
+for iy in range(_STEPS):
+    for ix in range(_STEPS):
+        a = iy * (_STEPS + 1) + ix
+        _dome_faces.append((a, a + 1, a + _STEPS + 2))
+        _dome_faces.append((a, a + _STEPS + 2, a + _STEPS + 1))
+dome_bvh = _BVHTree.FromPolygons(
+    [tuple(v) for v in _dome_verts], _dome_faces, all_triangles=True)
+
+curved_sides = []
+for i in range(6):
+    a = hex_corners[i]
+    b = hex_corners[(i + 1) % 6]
+    side = []
+    for t in range(9):
+        p = a.lerp(b, t / 8.0)
+        side.append(mathutils.Vector((p.x, p.y, _dome(p.x, p.y))))
+    curved_sides.append(side)
+
+res_curved = gen_nside.generate(curved_sides, {"span": 4}, bvh=dome_bvh)
+boundary = set(res_curved.boundary_local_indices)
+interior = [v for i, v in enumerate(res_curved.verts) if i not in boundary]
+check("a curved n-side patch has an interior at all", len(interior) >= 6,
+      len(interior))
+worst = max(abs(v.z - _dome(v.x, v.y)) for v in interior)
+# The dome sags 0.02 across a cell of the fill, so a chord-through-the-middle
+# would read an order of magnitude above this. The tolerance is the BVH's own
+# triangulation error.
+check("and every interior vertex sits on the surface", worst < 2e-3,
+      f"worst {worst:.6f}")
+
+flat_centre = mathutils.Vector((0.0, 0.0, 0.0))
+for side in curved_sides:
+    for point in side[:-1]:
+        flat_centre += point
+flat_centre /= 6 * 8
+check("which is not free -- the naive centre is well off it",
+      abs(flat_centre.z - _dome(flat_centre.x, flat_centre.y)) > 10 * worst,
+      abs(flat_centre.z - _dome(flat_centre.x, flat_centre.y)))
 
 print()
 if FAILURES:

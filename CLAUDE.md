@@ -293,6 +293,30 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   only that falls back to four by arc length, spread by *length* rather than
   index because a tessellated circle is not sampled uniformly.
   `tests/test_strip.py` pins the stadium, the circle and the rounded rectangle.
+- **An N-Side patch is one Coons sub-patch per side, not one quad per boundary
+  vertex.** A quad mesh of an odd-sided region has to put an irregular vertex
+  somewhere and the middle is where every tool puts it, so the centre is not
+  the problem — its *valence* was. The old fill emitted a quad per boundary
+  vertex, so the pole had `sides × span` spokes (24 on a six-sided patch at
+  span 4), and the only points inside the patch were that centre and one
+  midpoint per boundary segment: on a curved face the fill cut the curvature
+  off as a chord, which is what "it makes a fan" looks like on screen.
+  Now each side is split at its midpoint, a spoke runs from there to the
+  centre, and the quad between two consecutive spokes goes through the same
+  `coons_patch_grid` and BVH reprojection as every other generator. The pole's
+  valence becomes the *side* count, the interior becomes a real grid, and every
+  interior point sits on the surface.
+  Two things follow. **Each side carries an even number of segments**, because
+  it is split at one of its own vertices: `generators.nside.even_span` rounds
+  up, and `_prepare_patch` applies it **before** the spans are resolved so the
+  panel, a match and the mesh agree on one number — a match wanting an odd
+  count is then dropped by `_honours` instead of silently resampled into a
+  crack. And **those midpoints are no longer emitted on the boundary**: the old
+  fill subdivided every boundary segment without telling the neighbours, i.e.
+  it put a T-junction on every shared edge, which is why Cube Chamfer Edges
+  went from 32 open boundary edges to 6 with its deviation unchanged.
+  Per-side spans and hand-placed corners are still the reference tool's
+  full N-Side mode, and still not implemented.
 - **A patch can have more than one boundary loop, and their order is random.**
   `compute_boundary_loops` walks a *set* of half-edges, so "loop 0" of a face
   with a hole is as likely to be the hole as the face. Anything reducing a
@@ -1278,8 +1302,8 @@ remappable — see `keymap.py`.
 
 ## Status
 
-Implemented: Quad, Triangle, Wedge (2 sides), N-Side (5+, midpoint
-quadrangulation), Ring (two boundary loops: a face with a hole, or a tube-like
+Implemented: Quad, Triangle, Wedge (2 sides), N-Side (5+, one Coons
+sub-patch per side around a centre), Ring (two boundary loops: a face with a hole, or a tube-like
 face — this is the Cylinder case), N-gon mode for flat faces, topological
 corner detection, span propagation,
 per-patch UVs, boundary welding, smooth shading with sharp patch borders,
