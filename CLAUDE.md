@@ -605,6 +605,16 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
 
 ## Session model (`RETOP_OT_session`)
 
+**Picking an object selects it.** `enter_session_object` ends with
+`select_only`, because everything Blender does "to the object" — isolate,
+frame, the header, the properties editor — reads the *selection*, not this
+addon's state. Without it '/' isolated whatever happened to be selected before
+the session started, or nothing at all, on the one object the session is
+demonstrably about. It selects the **resolved** source, so entering by way of
+`<X>_Retop` does not leave the retopology selected; selection is not an ID, so
+it is safe outside an undo step, and it falls inside the session's own step
+anyway.
+
 **Context follows what the user is doing.** `resolve_session_object` maps a
 `<Something>_Retop` object to `Something`, so selecting the retopology and
 starting a session carries on with the source rather than failing on a mesh

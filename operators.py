@@ -983,6 +983,26 @@ def push_undo(message: str) -> None:
         pass
 
 
+def select_only(context: bpy.types.Context, obj: bpy.types.Object) -> None:
+    """Make `obj` the selection and the active object.
+
+    Everything Blender does "to the object" -- isolate, frame, the header, the
+    properties editor -- reads the selection rather than anything this addon
+    knows, so entering an object has to say so in the one language those
+    commands speak. Failures are ignored on purpose: an object outside the
+    current view layer cannot be selected, and that is not a reason to refuse
+    the session.
+    """
+    try:
+        for other in list(context.selected_objects):
+            if other is not obj:
+                other.select_set(False)
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+    except (RuntimeError, ReferenceError):
+        pass
+
+
 def enter_session_object(
     context: bpy.types.Context, obj: bpy.types.Object | None
 ) -> None:
@@ -1019,6 +1039,15 @@ def enter_session_object(
     state.session_object_name = obj.name
     state.session_phase = 'PATCH'
     mesh_build.set_result_highlight(context, obj, True)
+    # Picking with the eyedropper also *selects* what was picked. Blender's own
+    # object-scoped commands read the selection, not this addon's state, so
+    # without it '/' isolates whatever happened to be selected before the
+    # session started -- or nothing at all. Isolate is the one that matters
+    # here (`sync_local_view` then pulls the retopology and the preview in with
+    # it), but the same is true of every other thing Blender does to "the
+    # object". Selection is not an ID, so this is safe outside an undo step;
+    # it is inside the one below anyway.
+    select_only(context, obj)
     # Starting a session while already isolated ('/') would otherwise create
     # the preview and result meshes outside the local view, i.e. invisible.
     mesh_build.sync_local_view(context)
@@ -1668,8 +1697,10 @@ class RETOP_OT_session(bpy.types.Operator):
                 obj, _face_id, _distance = _raycast_patch(context, event)
                 if obj is None:
                     return {'RUNNING_MODAL'}
+                # Selecting and activating is `enter_session_object`'s job now,
+                # and it does it on the *resolved* object -- setting it here as
+                # well could activate a `<X>_Retop` the raycast handed back.
                 enter_session_object(context, obj)
-                context.view_layer.objects.active = obj
                 self._apply_phase_ui(context)
                 self.report({'INFO'}, f"Retopping {obj.name}")
                 return {'RUNNING_MODAL'}

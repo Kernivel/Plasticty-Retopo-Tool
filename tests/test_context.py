@@ -73,6 +73,16 @@ check("entering through the retopology enters its source instead",
       state.session_object_name == obj.name, state.session_object_name)
 check("and reaches the patch-picking phase, not a dead end",
       state.session_phase == 'PATCH', state.session_phase)
+
+# Picking an object also *selects* it. Everything Blender does "to the object"
+# -- isolate above all, which is why this was asked for -- reads the selection,
+# not this addon's state, so entering has to say so in that language. And it
+# has to be the resolved source: entering through the retopology must not leave
+# the retopology selected.
+check("entering selects what it entered", obj.select_get())
+check("and makes it active", bpy.context.view_layer.objects.active is obj,
+      bpy.context.view_layer.objects.active)
+check("not the result mesh it was entered through", not result.select_get())
 pr.operators.end_session(bpy.context)
 
 # An orphaned result -- source renamed or gone -- has nothing to resolve to and
