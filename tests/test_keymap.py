@@ -333,6 +333,52 @@ check("describe falls back to the declared default",
       km.describe("mirror") == "Alt+X", km.describe("mirror"))
 pr.operators._register_keymaps()
 
+# ---------------------------------------------------------------------------
+# The GLOBAL keys are not the addon's outside a session
+# ---------------------------------------------------------------------------
+# They are dispatched by Blender rather than by the modal, so unlike the
+# session's keys they are offered from the moment the addon is installed --
+# and '/' , Alt+X and Shift+X all belong to something else too (Hard Ops binds
+# Alt+X). A failing poll is what hands the event on, so the poll is the pin.
+GLOBAL_POLLS = {
+    "mirror": bpy.ops.retop.mirror.poll,
+    "see_through": bpy.ops.retop.toggle_see_through.poll,
+    "local_view": bpy.ops.retop.local_view.poll,
+}
+check("every GLOBAL action is tested here",
+      {a for a in km.ACTION_IDS if km.scope_of(a) == km.GLOBAL} == set(GLOBAL_POLLS),
+      sorted(a for a in km.ACTION_IDS if km.scope_of(a) == km.GLOBAL))
+
+state.session_active = False
+state.session_phase = 'OBJECT'
+check("with no session, no global key is claimed",
+      not any(poll() for poll in GLOBAL_POLLS.values()),
+      [n for n, poll in GLOBAL_POLLS.items() if poll()])
+
+state.session_active = True
+state.session_phase = 'PATCH'
+# The mirror still needs a result mesh and the isolate a 3D view, neither of
+# which a background run has -- so this asserts only that the *gate* opened,
+# which is the thing the change moved.
+check("a session opens the gate", pr.operators._global_keys_live(bpy.context))
+check("and the x-ray, which needs nothing else, is live",
+      bpy.ops.retop.toggle_see_through.poll())
+
+# The preference is the way back for anyone who wants the isolate and the
+# mirror between sessions. There is no addon entry in a plain import, so the
+# accessor is stood in for rather than the preference set.
+state.session_active = False
+_real_pref = km.global_keys_outside_session
+km.global_keys_outside_session = lambda: True
+try:
+    check("the preference puts them back with no session",
+          pr.operators._global_keys_live(bpy.context))
+    check("and the x-ray with it", bpy.ops.retop.toggle_see_through.poll())
+finally:
+    km.global_keys_outside_session = _real_pref
+check("with no addon entry the preference reads as off",
+      km.global_keys_outside_session() is False)
+
 state.session_active = False
 pr.unregister()
 

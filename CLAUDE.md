@@ -417,9 +417,11 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   `SLASH`/`NUMPAD_SLASH` in the addon keyconfig; it delegates the toggle to
   `view3d.localview` and then calls `mesh_build.sync_local_view`, which pulls
   the preview and each isolated source's `<Source>_Retop` into every viewport
-  that is in local view. The binding is unconditional (a keymap can't follow a
-  scene property); `local_view_include_retop` off makes `sync_local_view` a
-  no-op, so '/' behaves exactly like stock Blender. `local_view_set` only
+  that is in local view. The binding cannot follow a *scene* property, so
+  `local_view_include_retop` off instead makes `sync_local_view` a no-op and
+  '/' behaves exactly like stock Blender. What the binding does follow is the
+  session: like every `GLOBAL` key it polls false with none open, so outside a
+  session '/' is not the addon's at all (see the keys section). `local_view_set` only
   flips a per-viewport flag — no ID is created, so it is safe outside an undo
   step and can be called from `enter_session_object` (a session started while
   already isolated would otherwise build its preview invisibly).
@@ -874,6 +876,24 @@ back-from-hand-edit in `TWEAK` — with mutually exclusive polls, so the first
 whose poll passes is the one that runs. That is the "one key, two meanings"
 design expressed as data instead of spelled out. With no session, all three
 fail and `Tab` belongs to Blender again.
+
+**No key of the addon's is live outside a session.** The session's keys never
+were — every one of those operators polls `session_active` — but the three
+`GLOBAL` ones (`/`, `Alt+X`, `Shift+X`) were claimed from the moment the addon
+was installed, and all three are keys something else wants: Hard Ops binds
+`Alt+X`, and `/` is Blender's own isolate. An addon that has to be *disabled*
+to give a key back is not self-contained, so `operators._global_keys_live`
+gates those polls on a session being open, and **a failing poll is what hands
+the event on** — Blender skips the item and the next handler down (the other
+addon, or Blender's own binding) runs it, unchanged.
+`keymap.global_keys_outside_session`, an addon *preference* (per user, not per
+file), is the way back for anyone who wants the isolate and the mirror between
+sessions.
+Panel buttons are unaffected: the mirror's UI goes through
+`retop.mirror_axis` / `retop.apply_mirror`, which are bound to nothing and
+still poll on having a result mesh. `tests/test_keymap.py` pins that every
+`GLOBAL` action is gated — by comparing against the scope in `ACTIONS`, so a
+new one added there fails the test until it is considered.
 
 **Two things stay outside the keymap**: the **digits and Backspace** (numeric
 entry, not a shortcut — they must stay instantaneous and only make sense as a

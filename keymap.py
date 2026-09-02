@@ -268,3 +268,36 @@ def describe_all(action_id: str) -> list[str]:
     if items:
         return [describe_item(kmi) for kmi in items]
     return [describe_binding(b) for b in default_bindings(action_id)]
+
+
+def preferences() -> object | None:
+    """The addon's preferences entry, or None when there is no addon entry.
+
+    Read straight off the context rather than by importing `prefs`, which
+    imports *this* module -- and this one has to stay a leaf the overlay can
+    pull in. Returns None in the tests and in `--background`, where the package
+    is imported plainly and has no addon entry to hang preferences on.
+    """
+    try:
+        addon = bpy.context.preferences.addons.get(__package__)
+    except AttributeError:
+        return None
+    return getattr(addon, "preferences", None) if addon else None
+
+
+def global_keys_outside_session() -> bool:
+    """Whether the GLOBAL keys mean anything with no session running.
+
+    Off by default, and that default is what the GLOBAL/SESSION split costs
+    otherwise: '/' , `Alt+X` and `Shift+X` are keys other addons bind too --
+    Hard Ops above all, whose own `Alt+X` this one was modelled on -- and an
+    addon that claims them from the moment it is installed is one that has to
+    be *disabled* to get them back. A session running is the addon being used;
+    with none, these operators' polls fail and Blender hands the key on to
+    whoever else wants it, which is exactly what a failing poll does.
+
+    A preference rather than a hard rule because the isolate and the mirror are
+    genuinely useful between sessions, and the user who wants them back should
+    not have to give up the addon to get them.
+    """
+    return bool(getattr(preferences(), "global_keys_outside_session", False))

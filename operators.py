@@ -1980,6 +1980,27 @@ class RETOP_OT_end_tweak(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _global_keys_live(context: bpy.types.Context) -> bool:
+    """Whether the addon's GLOBAL keys mean anything right now.
+
+    They are dispatched by Blender rather than by the modal, so unlike the
+    session's keys they are offered on every press from the moment the addon is
+    installed -- and '/' , Alt+X and Shift+X are keys other addons want too
+    (Hard Ops' own Alt+X is where this one's was borrowed from). Claiming a key
+    an addon is not currently being used for is how an addon ends up having to
+    be disabled to get its keys back, so by default these polls fail with no
+    session open and Blender hands the event on to whoever else bound it.
+
+    `keymap.global_keys_outside_session` is the way back for anyone who wants
+    the isolate and the mirror between sessions. Panel buttons are unaffected:
+    they call `retop.mirror_axis` and `retop.apply_mirror`, which are not bound
+    to anything and stay polled on having a result mesh.
+    """
+    if keymap.global_keys_outside_session():
+        return True
+    return bool(context.scene.plasticity_retop.session_active)
+
+
 class RETOP_OT_mirror_axis(bpy.types.Operator):
     """Turn the retopology's mirror on or off for one axis.
 
@@ -2039,6 +2060,8 @@ class RETOP_OT_mirror(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
+        if not _global_keys_live(context):
+            return False  # Alt+X goes back to Hard Ops, or to whoever else has it
         _source, result = mesh_build.mirror_target(context)
         return result is not None
 
@@ -2145,6 +2168,10 @@ class RETOP_OT_toggle_see_through(bpy.types.Operator):
                       "the surface rather than floating off it")
     bl_options = {'REGISTER'}
 
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return _global_keys_live(context)
+
     def execute(self, context: bpy.types.Context) -> set[str]:
         state = context.scene.plasticity_retop
         state.result_see_through = not state.result_see_through
@@ -2172,6 +2199,8 @@ class RETOP_OT_local_view(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
+        if not _global_keys_live(context):
+            return False  # '/' is plain view3d.localview again, one handler down
         space = context.space_data
         return space is not None and space.type == 'VIEW_3D'
 
@@ -2664,9 +2693,11 @@ def _register_keymaps() -> None:
     and runs the first whose poll passes, which is exactly the behaviour the
     modal used to spell out.
 
-    The '/' override is unconditional because a binding can't follow a scene
-    property; when "Keep Retopo in Isolate" is off, RETOP_OT_local_view just
-    forwards to view3d.localview and nothing about '/' changes. Alt+X is the
+    The '/' override can't follow a scene property, so when "Keep Retopo in
+    Isolate" is off RETOP_OT_local_view just forwards to view3d.localview and
+    nothing about '/' changes. Its poll does follow the *session*, as every
+    GLOBAL key's now does (`_global_keys_live`): outside one the item is
+    skipped and the key belongs to Blender and to other addons again. Alt+X is the
     mirror, as in Hard Ops -- the reflex the key is borrowed from, and symmetry
     is reached for far more often than the x-ray, which is why the x-ray sits
     on Shift+X. *Not* Alt+Z: that is Blender's own viewport X-ray and taking it

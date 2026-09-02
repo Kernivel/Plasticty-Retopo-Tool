@@ -80,9 +80,26 @@ class RETOP_AddonPreferences(bpy.types.AddonPreferences):
     # Must be the package name for Blender to attach this to the addon entry.
     bl_idname = __package__
 
+    # Annotated, never assigned: that is how Blender registers a property, and
+    # it is the one class-body annotation a registered class may carry.
+    global_keys_outside_session: bpy.props.BoolProperty(
+        name="Global Keys Outside a Session",
+        description=("Keep Isolate ('/'), Mirror (Alt+X) and Retopo X-ray (Shift+X) live when no "
+                     "retopology session is running. Off by default so the addon claims no key "
+                     "unless it is being used -- with it off, those keys fall straight through to "
+                     "Blender and to other addons (Hard Ops binds Alt+X too). The session's own "
+                     "keys are never affected: they only ever exist while a session is open"),
+        default=False,
+    )
+
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         layout.label(text="Keybinds", icon='EVENT_A')
+        box = layout.box()
+        box.prop(self, "global_keys_outside_session")
+        box.label(
+            text="Off: no addon key is live outside a session, so nothing is taken from other addons",
+            icon='INFO')
         layout.label(
             text="Also under Preferences > Keymap > Add-ons > 3D View",
             icon='INFO')
