@@ -122,6 +122,37 @@ def deviation_samples(source_obj, result_obj):
     return interior, corners
 
 
+def flipped_faces(source_obj, result_obj):
+    """How many result faces point the opposite way from the CAD surface.
+
+    A retopology that is inside out is invisible in solid shading and obvious
+    the moment anything is exported or shaded -- and a generator can flip a
+    whole patch without changing a single count, so nothing else measured here
+    would notice. That is what happened when a matched rim started leading a
+    band: 1610 of 2139 faces on Plate And Cylinder turned over, with the vertex
+    and face counts, the deviation and the open-edge count all unchanged.
+
+    Compared against the nearest source polygon rather than a global "outward":
+    a CAD import is a shell whose faces already carry the right orientation,
+    and there is no other definition of right here.
+    """
+    if not source_obj.data.polygons or not result_obj.data.polygons:
+        return 0
+    bvh, tri_poly = pr.geometry.build_bvh_with_polygon_map(source_obj.data)
+    to_source = source_obj.matrix_world.inverted() @ result_obj.matrix_world
+    rotation = to_source.to_3x3()
+
+    flipped = 0
+    for poly in result_obj.data.polygons:
+        hit = bvh.find_nearest(to_source @ poly.center)
+        if not hit or hit[0] is None:
+            continue
+        source_poly = source_obj.data.polygons[tri_poly[hit[2]]]
+        if (rotation @ poly.normal).dot(source_poly.normal) < 0.0:
+            flipped += 1
+    return flipped
+
+
 # --- topology and cell quality ---------------------------------------------
 
 def topology_report(result_obj, weld_distance):
@@ -324,6 +355,7 @@ def report(obj, records, resolution):
     print(f"    open boundary edges : {topology['open_edges']}")
     print(f"    non-manifold edges  : {topology['non_manifold']}")
     print(f"    unwelded coincident : {topology['unwelded']}")
+    print(f"    faces facing inward : {flipped_faces(obj, result_obj)}")
     print(f"    interior poles      : {topology['poles']}")
 
     quality = quality_report(result_obj)

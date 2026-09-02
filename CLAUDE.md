@@ -372,6 +372,23 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   positions, and a corner welds by identity: the neighbours then weld to points
   on the far side of the band, which measured as a 4.9% deviation and a quad
   spanning the whole part. `tests/test_ring_match.py`.
+- **Which way the band faces follows the outer loop, not whichever rim leads.**
+  The two loops of a patch wind *opposite* ways — an outer boundary one way, a
+  hole the other — so pairing them straight across means one of them is
+  reversed, and which one decides which way every quad faces. It used to be
+  the hole, always, because the outer loop always led. Once a matched hole
+  leads, it is the outer row that comes back reversed and **every normal of the
+  band flips**: the retopology turned inside out the moment a side was matched,
+  which is what Blender's face-orientation overlay showed as a red band. The
+  quads are emitted the other way round when `ring.loop_area_vector` says the
+  outer row ended up running against its own walk order. No count above catches
+  this — the fixture had 1610 of 2139 faces turned over with its vertex count,
+  face count, deviation and open-edge count all unchanged — so
+  `benchmark.flipped_faces` measures it against the *nearest source polygon*
+  (a CAD import is a shell whose faces already carry the right orientation, and
+  there is no other definition of right), `tests/test_fixtures.py` asserts it
+  is zero on every shape, and `tests/test_ring_match.py` builds the two rims
+  wound opposite ways — wound the same way, the bug is invisible.
 - **A ring's two rims are keyed per loop, not against each other.** Every other
   generator collides sides that share a span, because a grid has one count per
   direction. A ring's rungs run `outer[i]` → `inner[i]`, so both rims *can* be

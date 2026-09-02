@@ -112,6 +112,68 @@ for locked_index in (0, 1):
     check(f"loop {locked_index} locked: the rungs still run straight across",
           worst < 0.5, f"{worst:.4f}deg")
 
+# ---------------------------------------------------------------------------
+# Matching must not turn the band inside out
+# ---------------------------------------------------------------------------
+# The two loops of a patch wind opposite ways -- an outer boundary one way, a
+# hole the other -- so pairing them straight across means one of them is
+# reversed, and *which* one decides which way every quad faces. It used to be
+# the hole, always, because the outer loop always led. Once a matched hole
+# leads instead, it is the outer row that comes back reversed and every normal
+# flips: the retopology turned inside out the moment a side was matched, which
+# is what Blender's face-orientation overlay showed as a red band.
+def face_normals_outward(result, n, across):
+    """For each quad, whether its normal points away from the ring's axis."""
+    out = []
+    for face in result.faces:
+        verts = [result.verts[i] for i in face]
+        normal = mathutils.Vector((0.0, 0.0, 0.0))
+        for a, b in zip(verts, verts[1:] + verts[:1]):
+            normal += a.cross(b)
+        centre = sum(verts, mathutils.Vector((0.0, 0.0, 0.0))) / len(verts)
+        radial = mathutils.Vector((centre.x, centre.y, 0.0))
+        if radial.length < 1e-9 or normal.length < 1e-12:
+            continue
+        out.append(normal.dot(radial) > 0.0)
+    return out
+
+
+# A tube, with its two rims wound *opposite* ways -- which is how a patch's
+# boundary loops actually come out of the half-edge walk, and the whole reason
+# one of them has to be reversed to pair them up. Two rims wound the same way
+# would hide this bug completely.
+def rim(count, phase, z, reverse=False):
+    points = circle(1.0, count, phase=phase, z=z)
+    return closed_side(list(reversed(points)) if reverse else points)
+
+
+tube = [rim(96, 0.0, 0.0), rim(96, 0.0, 1.0, reverse=True)]
+unmatched = generator.generate(tube, {"span_u": AROUND, "span_v": ACROSS})
+facing = face_normals_outward(unmatched, AROUND, ACROSS)
+check("the band faces one way consistently to begin with",
+      len(set(facing)) == 1, set(facing))
+
+for locked_index in (0, 1):
+    matched_loops = [rim(96, 0.0, 0.0), rim(96, 0.0, 1.0, reverse=True)]
+    matched_loops[locked_index] = rim(AROUND, 0.31, float(locked_index),
+                                      reverse=locked_index == 1)
+    matched = generator.generate(
+        matched_loops,
+        {"span_u": AROUND, "span_v": ACROSS, "locked_loops": [locked_index]})
+    matched_facing = face_normals_outward(matched, AROUND, ACROSS)
+    check(f"loop {locked_index} locked: the band still faces one way",
+          len(set(matched_facing)) == 1, set(matched_facing))
+    check(f"loop {locked_index} locked: and the same way as unmatched",
+          set(matched_facing) == set(facing),
+          f"{set(matched_facing)} vs {set(facing)}")
+
+# The piece it rests on: an ordering tells its own direction.
+square = [mathutils.Vector((0, 0, 0)), mathutils.Vector((1, 0, 0)),
+          mathutils.Vector((1, 1, 0)), mathutils.Vector((0, 1, 0))]
+check("a loop's area vector flips with its ordering",
+      ring.loop_area_vector(square).dot(
+          ring.loop_area_vector(list(reversed(square)))) < 0.0)
+
 # A locked rim is not the source vertex its loop started at either, so it gives
 # up its corner id the same way a phased one does -- but in place, not by
 # shortening the list. The outer id would otherwise be stamped onto the hole.

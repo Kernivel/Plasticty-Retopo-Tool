@@ -71,6 +71,7 @@ def measure(context, obj):
     state = context.scene.plasticity_retop
     weld = pr.state.to_blender_units(state, state.boundary_weld_distance)
     row["topo"] = benchmark.topology_report(result, weld)
+    row["flipped"] = benchmark.flipped_faces(obj, result)
     row["quality"] = benchmark.quality_report(result)
     return row
 
@@ -195,8 +196,8 @@ def main() -> None:
     # --- 3. topology ------------------------------------------------------
     w("## Topology")
     w("")
-    w("| Object | Verts | Faces | Face sizes | Open edges | Non-manifold | Unwelded | Interior poles |")
-    w("|---|--:|--:|---|--:|--:|--:|--:|")
+    w("| Object | Verts | Faces | Face sizes | Open edges | Non-manifold | Unwelded | Inward | Interior poles |")
+    w("|---|--:|--:|---|--:|--:|--:|--:|--:|")
     for row in rows:
         if not row["faces"]:
             continue
@@ -204,10 +205,13 @@ def main() -> None:
         sizes = ", ".join(f"{n}&times;{k}-gon" for k, n in sorted(t["sizes"].items()))
         w(f"| `{row['name']}` | {t['verts']} | {t['faces']} | {sizes} "
           f"| {t['open_edges']} | {t['non_manifold']} | {t['unwelded']} "
-          f"| {t['poles']} |")
+          f"| {row['flipped']} | {t['poles']} |")
     w("")
-    w("**Non-manifold and unwelded are zero everywhere**, which is the pair "
-      "worth being strict about. Open-edge counts are a worst case rather than "
+    w("**Non-manifold, unwelded and inward-facing are zero everywhere**, which "
+      "is the set worth being strict about. \"Inward\" counts faces pointing "
+      "the opposite way from the CAD surface under them -- a whole patch can "
+      "turn over without changing any other number in this table, which is "
+      "exactly what a matched rim leading a band once did. Open-edge counts are a worst case rather than "
       "a quality score: this run commits in the fixture's own face order, and "
       "auto-matching can only match an *already committed* neighbour, so a "
       "patch baked early can never weld to one baked later.")

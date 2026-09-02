@@ -102,6 +102,11 @@ def ring_from_sides(
     return points, corner_indices, alloc
 
 
+# "This corner has no vertex": emitted for a phased rim, whose points land
+# nowhere near the source vertex the loop started at. `mesh_build` skips a
+# negative local index rather than stamping an id onto a point that moved.
+NO_CORNER = -1
+
 # --- is this really a band? --------------------------------------------------
 #
 # Two boundary loops is a *topological* annulus, and this generator fills any
@@ -117,11 +122,6 @@ def ring_from_sides(
 # perimeters are. Both limits are deliberately generous: a band whose hole is a
 # different shape from its outer boundary is still a band, and the cost of
 # calling one a plate is worse than the cost of the reverse.
-# "This corner has no vertex": emitted for a phased rim, whose points land
-# nowhere near the source vertex the loop started at. `mesh_build` skips a
-# negative local index rather than stamping an id onto a point that moved.
-NO_CORNER = -1
-
 BAND_GAP_SPREAD = 4.0       # widest gap over narrowest, sampled around the loop
 BAND_PERIMETER_RATIO = 6.0  # outer perimeter over inner
 
@@ -214,6 +214,20 @@ def closed_points(side: list[mathutils.Vector]) -> list[mathutils.Vector]:
     if len(side) > 1 and (side[0] - side[-1]).length < 1e-9:
         return list(side[:-1])
     return list(side)
+
+
+def loop_area_vector(points: list[mathutils.Vector]) -> mathutils.Vector:
+    """Newell's normal for a closed polyline: which way round it runs.
+
+    Its *direction* is the answer being asked for -- two orderings of the same
+    loop give area vectors pointing opposite ways -- so nothing here needs the
+    loop to be planar or the magnitude to mean anything.
+    """
+    normal = mathutils.Vector((0.0, 0.0, 0.0))
+    n = len(points)
+    for i in range(n):
+        normal += points[i].cross(points[(i + 1) % n])
+    return normal
 
 
 def _segment_lengths(points: list[mathutils.Vector]) -> list[float]:
@@ -431,6 +445,7 @@ class RingGenerator(Generator):
         lead_index = 1 if (1 in locked and 0 not in locked) else 0
         free_index = 1 - lead_index
         lead_sides, free_sides = loops[lead_index], loops[free_index]
+        outer_sides = loops[0]  # for the winding check further down
 
         lead, lead_corners, lead_alloc = ring_from_sides(lead_sides, around)
         n = len(lead)
@@ -511,11 +526,26 @@ class RingGenerator(Generator):
         def index_of(r: int, i: int) -> int:
             return r * n + (i % n)
 
+        # Which way the outer row ends up running decides which way every quad
+        # faces, and the two loops of a patch wind *opposite* ways -- an outer
+        # boundary one way, a hole the other -- so pairing them straight across
+        # means one of them is reversed. It used to be the hole, always,
+        # because the outer loop always led. Once a matched hole leads instead,
+        # it is the outer row that comes back reversed and every normal of the
+        # band flips: that is the retopology turning inside out the moment a
+        # side is matched. Emitting the quads the other way round when that
+        # happens keeps the band facing whichever way the CAD boundary says,
+        # matched or not.
+        flipped = (loop_area_vector(outer).dot(
+            loop_area_vector([point for side in outer_sides
+                              for point in side[:-1]])) < 0.0)
+
         faces = []
         for r in range(across):
             for i in range(n):
-                faces.append((index_of(r, i), index_of(r, i + 1),
-                              index_of(r + 1, i + 1), index_of(r + 1, i)))
+                quad = (index_of(r, i), index_of(r, i + 1),
+                        index_of(r + 1, i + 1), index_of(r + 1, i))
+                faces.append(quad[::-1] if flipped else quad)
 
         # Corners first of the outer loop then of the hole, matching the order
         # operators._prepare_patch collects their source vertex ids in.

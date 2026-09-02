@@ -12,7 +12,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 |---|---|
 | Generated | 2026-09-02 |
 | Blender | 5.1.1 |
-| Addon | 0.46.0 (2026-09-02-d) |
+| Addon | 0.49.0 (2026-09-02-g) |
 | Resolution | MID |
 | Fixture | `tests/fixtures/TestCases.blend`, 15 objects |
 
@@ -49,7 +49,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | `Cylinder` | 0.0171% | 0.0247% | 0.0464% | **0.0602%** | 0.0006% |
 | `Flat Loop` | 0.0149% | 0.0258% | 0.0540% | **0.0737%** | 0.0000% |
 | `Loopsided Chamfers Cube` | 0.0000% | 0.0000% | 0.0001% | **0.0001%** | 0.0000% |
-| `Plate` | 0.0072% | 0.0179% | 0.0477% | **0.0770%** | 0.0001% |
+| `Plate` | 0.0072% | 0.0179% | 0.0478% | **0.0770%** | 0.0001% |
 | `Plate And Cylinder` | 0.0145% | 0.0261% | 0.0599% | **0.1399%** | 0.0081% |
 | `Shape with holes` | 0.0242% | 0.1563% | 0.0675% | **8.9746%** | 0.0000% |
 | `Square Plate Small Hole` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
@@ -60,23 +60,23 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 
 ## Topology
 
-| Object | Verts | Faces | Face sizes | Open edges | Non-manifold | Unwelded | Interior poles |
-|---|--:|--:|---|--:|--:|--:|--:|
-| `Carved Rounded Slot` | 172 | 131 | 131&times;4-gon | 90 | 0 | 0 | 4 |
-| `Cone` | 682 | 612 | 612&times;4-gon | 140 | 0 | 0 | 0 |
-| `Cube Bevel Edges` | 762 | 721 | 15&times;3-gon, 706&times;4-gon | 105 | 0 | 0 | 2 |
-| `Cube Chamfer Edges` | 44 | 36 | 36&times;4-gon | 32 | 0 | 0 | 5 |
-| `Cylinder` | 1592 | 1590 | 1590&times;4-gon | 0 | 0 | 0 | 8 |
-| `Flat Loop` | 352 | 236 | 236&times;4-gon | 232 | 0 | 0 | 0 |
-| `Loopsided Chamfers Cube` | 34 | 32 | 32&times;4-gon | 0 | 0 | 0 | 8 |
-| `Plate` | 775 | 657 | 657&times;4-gon | 232 | 0 | 0 | 4 |
-| `Plate And Cylinder` | 2229 | 2139 | 2139&times;4-gon | 184 | 0 | 0 | 4 |
-| `Shape with holes` | 569 | 454 | 454&times;4-gon | 226 | 0 | 0 | 8 |
-| `Square Plate Small Hole` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 8 |
-| `Square Plate Small Hole Far Away` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 8 |
-| `Square Plate Small Hole Scaled Down` | 12 | 10 | 10&times;4-gon | 0 | 0 | 0 | 8 |
+| Object | Verts | Faces | Face sizes | Open edges | Non-manifold | Unwelded | Inward | Interior poles |
+|---|--:|--:|---|--:|--:|--:|--:|--:|
+| `Carved Rounded Slot` | 172 | 131 | 131&times;4-gon | 90 | 0 | 0 | 0 | 4 |
+| `Cone` | 682 | 612 | 612&times;4-gon | 140 | 0 | 0 | 0 | 0 |
+| `Cube Bevel Edges` | 762 | 721 | 15&times;3-gon, 706&times;4-gon | 105 | 0 | 0 | 0 | 2 |
+| `Cube Chamfer Edges` | 44 | 36 | 36&times;4-gon | 32 | 0 | 0 | 0 | 5 |
+| `Cylinder` | 1592 | 1590 | 1590&times;4-gon | 0 | 0 | 0 | 0 | 8 |
+| `Flat Loop` | 352 | 236 | 236&times;4-gon | 232 | 0 | 0 | 0 | 0 |
+| `Loopsided Chamfers Cube` | 34 | 32 | 32&times;4-gon | 0 | 0 | 0 | 0 | 8 |
+| `Plate` | 775 | 657 | 657&times;4-gon | 232 | 0 | 0 | 0 | 4 |
+| `Plate And Cylinder` | 2229 | 2139 | 2139&times;4-gon | 184 | 0 | 0 | 0 | 4 |
+| `Shape with holes` | 569 | 454 | 454&times;4-gon | 226 | 0 | 0 | 0 | 8 |
+| `Square Plate Small Hole` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 0 | 8 |
+| `Square Plate Small Hole Far Away` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 0 | 8 |
+| `Square Plate Small Hole Scaled Down` | 12 | 10 | 10&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 
-**Non-manifold and unwelded are zero everywhere**, which is the pair worth being strict about. Open-edge counts are a worst case rather than a quality score: this run commits in the fixture's own face order, and auto-matching can only match an *already committed* neighbour, so a patch baked early can never weld to one baked later.
+**Non-manifold, unwelded and inward-facing are zero everywhere**, which is the set worth being strict about. "Inward" counts faces pointing the opposite way from the CAD surface under them -- a whole patch can turn over without changing any other number in this table, which is exactly what a matched rim leading a band once did. Open-edge counts are a worst case rather than a quality score: this run commits in the fixture's own face order, and auto-matching can only match an *already committed* neighbour, so a patch baked early can never weld to one baked later.
 
 ## Cell quality
 

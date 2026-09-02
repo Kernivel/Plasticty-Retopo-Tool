@@ -435,6 +435,12 @@ for name in sorted(EXPECTED):
     check(f"{name}: no coincident vertex pair failed to weld",
           topology["unwelded"] == 0, topology["unwelded"])
     check(f"{name}: no wire edges", topology["wire"] == 0, topology["wire"])
+    # Orientation, which no count in the table would catch: a generator can
+    # turn a whole patch over without changing a single number above. A ring
+    # did exactly that once a matched rim started leading the band.
+    check(f"{name}: nothing faces into the surface",
+          benchmark.flipped_faces(obj, result_obj) == 0,
+          benchmark.flipped_faces(obj, result_obj))
 
     interior, corners = benchmark.deviation_samples(obj, result_obj)
     scale = benchmark.bbox_diagonal(obj)
