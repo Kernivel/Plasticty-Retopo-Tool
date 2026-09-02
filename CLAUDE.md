@@ -14,13 +14,19 @@ python scripts/deploy.py --list      # show detected Blender config dirs
 
 # retopologize every patch of a real bridge export and measure the result:
 # deviation from the CAD surface, topology, cell quality
-blender tests/fixtures/TestCases.blend --background --python scripts/benchmark.py
-blender tests/fixtures/TestCases.blend --background --python scripts/benchmark.py -- --resolution HIGH --object Cylinder
+blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/benchmark.py
+blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/benchmark.py -- --resolution HIGH --object Cylinder
 
 # regenerate the two documents derived from that fixture
-blender tests/fixtures/TestCases.blend --background --python scripts/gen_results.py       # RESULTS.md
-blender tests/fixtures/TestCases.blend --background --python scripts/gen_expectations.py  # the EXPECTED table
+blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/gen_results.py       # RESULTS.md
+blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/gen_expectations.py  # the EXPECTED table
 ```
+
+**`--factory-startup` is not optional on those four**, however harmless a
+read-only script looks: run without it and every installed addon loads too, and
+one of them *saved the fixture over itself* on quit (it left a `.blend1` beside
+it, which is the tell). The file is frozen — `git status` after any run against
+it, and `git checkout` it back if it moved.
 
 `RESULTS.md` is that benchmark written up as tables, and `gen_expectations.py`
 emits the golden table `tests/test_fixtures.py` asserts on. **Both are
