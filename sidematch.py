@@ -340,7 +340,13 @@ def span_key_for(generator_name: str, reference: SideReference) -> str:
     An n-gon has no spans at all -- every side carries its own segment count --
     so each gets a key of its own and nothing ever collides.
     """
-    if generator_name == constants.NGON:
+    if generator_name in (constants.NGON, constants.NSIDE):
+        # Both carry a segment count per side rather than per direction: an
+        # n-gon because every side is its own edge run, an N-Side because side
+        # `i` is the sum of the two spokes either side of it (see
+        # generators/nside.py). Two of an N-Side's *can* still disagree, when
+        # they meet at the same spoke -- but that is the allocation's answer to
+        # give, not a collision to settle before it is asked.
         return f"side:{reference.index}"
     if generator_name == constants.RING:
         # A ring's two loops both feed "around", but they are not in
@@ -462,8 +468,13 @@ def _honours(
     to land on. Better to leave the side as the CAD drew it and let the count
     the user asked for mean what it says.
     """
-    if spans is None or key.startswith("side:"):
-        return True  # n-gon sides carry their own count; nothing to disagree with
+    if spans is None:
+        return True
+    if key.startswith("side:"):
+        # An n-gon hands down no spans at all -- nothing there can disagree.
+        # An N-Side does: its spoke allocation is what decides which sides it
+        # can honour, and a side it could not is dropped here like any other.
+        return key not in spans or spans[key] == len(points) - 1
     return spans.get(span_base(key)) == len(points) - 1
 
 

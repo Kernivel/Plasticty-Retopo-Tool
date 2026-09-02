@@ -142,6 +142,20 @@ def register_spans_for(
                         forced[loop_i] if loop_i < len(forced) else None))
         return
 
+    if state.generator_name == constants.NSIDE:
+        # Per side, from the same solve generation ran: the registry has to
+        # advertise what the mesh actually got, and an N-Side's sides no longer
+        # share one number. The winners are re-collected rather than carried
+        # over, off the side references the preview left behind -- same patch,
+        # same pins, same answer.
+        winners, _outvoted = sidematch.collect_side_matches(context, constants.NSIDE)
+        spokes, _refused = nside_allocation(len(prepared.sides), state.span, winners)
+        corner_ids = prepared.corner_source_ids
+        if corner_ids:
+            mesh_build.register_patch_spans(
+                source_obj, corner_ids, generators.nside.side_segments(spokes))
+        return
+
     if prepared.is_ring:
         around = generators.ring.around_count(prepared.loops_sides, state.span_u)
         for corner_ids, loop_sides in zip(prepared.loops_corner_ids, prepared.loops_sides):
@@ -154,6 +168,44 @@ def register_spans_for(
     if corner_ids:
         mesh_build.register_patch_spans(
             source_obj, corner_ids, spans_per_side(state, len(corner_ids)))
+
+
+def nside_allocation(
+    num_sides: int,
+    span: int,
+    winners: "sidematch.Winners",
+) -> tuple[list[int], list[int]]:
+    """(spoke counts, side indices whose match cannot be honoured) for N-Side.
+
+    An N-Side patch's sides are no longer one shared span: side `i` spans the
+    two spokes either side of it, so several sides can reproduce several
+    committed neighbours at once. What they cannot always do is *all* of them --
+    two sides meeting at one spoke can want counts that disagree -- so the
+    wanted counts are applied in the same order `_winning_matches` ranks them
+    (a pin first, then the denser match) and whatever is left over is refused
+    rather than approximated.
+
+    Shared by generation and the commit path deliberately: the registry has to
+    advertise the counts the mesh actually got, and the only way to be sure of
+    that is for both to run the same solve on the same inputs.
+    """
+    ranked = []
+    for key, (reference, points, pinned) in winners.items():
+        if not key.startswith("side:"):
+            continue
+        ranked.append((1 if pinned else 0, len(points), reference.index,
+                       len(points) - 1))
+    ranked.sort(reverse=True)
+
+    wanted = {}
+    order = []
+    for _pinned, _length, index, count in ranked:
+        if 0 <= index < num_sides:
+            wanted[index] = count
+            order.append(index)
+
+    default_half = max(1, generators.nside.even_span(span) // 2)
+    return generators.nside.spoke_allocation(num_sides, default_half, wanted, order)
 
 
 def spans_per_side(state: state_mod.RetopPatchState, num_sides: int) -> list[int]:
@@ -469,21 +521,28 @@ def _generate_for_face(
         else:
             span = count
 
-    if generator.name == constants.NSIDE:
-        # An N-Side patch splits every side at its midpoint, so an odd number
-        # of segments cannot be built. Rounded here, before the spans are
-        # resolved: what the panel shows, what a match has to reproduce and
-        # what the mesh gets have to be one number rather than three -- a match
-        # asking for an odd count is then dropped by `_honours` instead of
-        # being silently resampled into a crack.
-        span = generators.nside.even_span(span)
-
     spans = {"span_u": span_u, "span_v": span_v, "span": span}
+    nside_spokes = None
+    if generator.name == constants.NSIDE:
+        # An N-Side patch splits every side at a spoke, so with nothing matched
+        # every side carries the same even count -- and a match moves only the
+        # two spokes its own side sits between, which is what lets several
+        # neighbours be reproduced on one patch. The allocation is settled here,
+        # before any side is rewritten, and handed down as a per-side span so
+        # `_honours` drops exactly the matches it could not fit.
+        span = generators.nside.even_span(span)
+        nside_spokes, _refused = nside_allocation(len(prepared.sides), span, winners)
+        segments_of = generators.nside.side_segments(nside_spokes)
+        spans.update({f"side:{index}": count
+                      for index, count in enumerate(segments_of)})
+
     sidematch.apply_side_matches(context, obj, prepared, generator.name, spans, winners=winners)
 
     bvh = (geometry.build_bvh_for_polygons(mesh, prepared.patch.poly_indices)
            if state.reproject else None)
     span_settings = {"span_u": span_u, "span_v": span_v, "span": span}
+    if nside_spokes is not None:
+        span_settings["spokes"] = nside_spokes
     if prepared.is_ring:
         # Which loops now carry a neighbour's own vertices rather than a sample
         # of the CAD boundary. The ring has to know: a matched rim may not be

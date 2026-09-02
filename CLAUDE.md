@@ -306,17 +306,33 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   `coons_patch_grid` and BVH reprojection as every other generator. The pole's
   valence becomes the *side* count, the interior becomes a real grid, and every
   interior point sits on the surface.
-  Two things follow. **Each side carries an even number of segments**, because
-  it is split at one of its own vertices: `generators.nside.even_span` rounds
-  up, and `_prepare_patch` applies it **before** the spans are resolved so the
-  panel, a match and the mesh agree on one number — a match wanting an odd
-  count is then dropped by `_honours` instead of silently resampled into a
-  crack. And **those midpoints are no longer emitted on the boundary**: the old
+  **And the sides stop sharing one span, which is what lets several of them be
+  matched at once.** A side is bounded by the spokes of its two *neighbours* —
+  `t[i] = s[i-1] + s[i+1]`, its own spoke only saying where it is split — so
+  choosing the spokes chooses every side's count. Two sides bordering two
+  finished patches used to be a collision by construction: one was matched and
+  the other was told "another side drives the same span" and left on the CAD
+  tessellation, i.e. a crack along an edge visibly against retopology.
+  `nside.spoke_allocation` is that solve, and deliberately not a general one:
+  `s[i-1] + s[i+1] = t[i]` over a cycle is only always solvable for odd `n`, so
+  the wanted counts are applied in the order `_winning_matches` ranks them (a
+  pin, then the denser match) and whatever cannot be fitted is **refused**
+  rather than approximated — a match returning a count nobody asked for is a
+  crack that looks like a weld. `operators.nside_allocation` runs it for
+  generation *and* for the commit's span registry, off the same winners, so the
+  registry cannot advertise a count the mesh does not have. `span_key_for`
+  therefore keys an N-Side per side, like an n-gon; what decides a conflict is
+  the allocation, not `_winning_matches`.
+  With nothing matched every spoke is equal, so **each side carries an even
+  number of segments** — it is split at one of its own vertices, and
+  `even_span` rounds the uniform case up to something buildable.
+  **Those midpoints are no longer emitted on the boundary**: the old
   fill subdivided every boundary segment without telling the neighbours, i.e.
   it put a T-junction on every shared edge, which is why Cube Chamfer Edges
   went from 32 open boundary edges to 6 with its deviation unchanged.
-  Per-side spans and hand-placed corners are still the reference tool's
-  full N-Side mode, and still not implemented.
+  Per-side spans *in the panel* and hand-placed corners are still what the
+  reference tool's full N-Side mode adds; the machinery under them is here.
+  `tests/test_nside_match.py`.
 - **A patch can have more than one boundary loop, and their order is random.**
   `compute_boundary_loops` walks a *set* of half-edges, so "loop 0" of a face
   with a hole is as likely to be the hole as the face. Anything reducing a
@@ -838,6 +854,12 @@ committed geometry in its own pool and it matched itself: a re-edit came back
 with whatever spans reproduced what was already there instead of the ones it
 was committed with. `build_side_references` takes the face id explicitly.
 
+**Green is never a side merely under the cursor.** Hovering an unmatched side
+used to turn it the same green as a matched one, which put the two states one
+mouse move apart and undid most of what the colours are for. A hover brightens
+to *white*; red still means clicking would refuse, and whether a white one
+would match or refuse is the tooltip's answer.
+
 **A grid cannot honour two counts in one direction.** Two sides driving the
 same span used to both get substituted, with the second silently winning the
 count — leaving the loser's points resampled to a number that was not theirs,
@@ -1331,6 +1353,9 @@ the band, and spans don't propagate *into* a ring), faces with **more than one
 hole** (outer loop only, panel warns), **Quad Fill** with configurable loop
 cuts, **N-Side** with per-side spans and manual corner placement, quad-family
 (solving a chain of connected quads in one click).
+
+Also implemented: **several matches on one N-Side patch**, since its sides no
+longer share a span (`nside.spoke_allocation`).
 
 Known rough edge: matching one side of a **multi-side ring** sets that loop's
 whole "around" count from that side alone — `span_key_for` now keys a ring per

@@ -184,6 +184,18 @@ check("a matched side is drawn in the matched colour",
       matched_color == pr.overlay.SIDE_MATCHED_COLOR, matched_color)
 check("a side that is not being matched is not drawn green",
       idle_color != pr.overlay.SIDE_MATCHED_COLOR, idle_color)
+# Nor is one under the cursor: hovering used to turn an unmatched side the same
+# green as a matched one, which put the two states one mouse move apart.
+hovered_available = pr.overlay._side_appearance(
+    next(r for r in references if r.available and not r.applied), None, True)[0]     if any(r.available and not r.applied for r in references) else None
+if hovered_available is not None:
+    check("nor is one merely hovered",
+          hovered_available != pr.overlay.SIDE_MATCHED_COLOR, hovered_available)
+check("green is only ever a match being reproduced",
+      pr.overlay.SIDE_AVAILABLE_HOVER_COLOR[1]
+      <= max(pr.overlay.SIDE_AVAILABLE_HOVER_COLOR[0],
+             pr.overlay.SIDE_AVAILABLE_HOVER_COLOR[2]),
+      pr.overlay.SIDE_AVAILABLE_HOVER_COLOR)
 check("and the matched one is drawn heavier",
       matched_width > pr.overlay.SIDE_WIDTH, matched_width)
 

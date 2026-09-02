@@ -83,7 +83,12 @@ SIDE_MATCHED_HOVER_COLOR = (0.60, 1.0, 0.75, 1.0)
 SIDE_SOURCE_COLOR = (1.0, 0.72, 0.25, 0.95)        # matched to its own CAD edge
 SIDE_SOURCE_HOVER_COLOR = (1.0, 0.85, 0.55, 1.0)
 SIDE_AVAILABLE_COLOR = (0.55, 0.60, 0.58, 0.55)    # could be matched, isn't
-SIDE_AVAILABLE_HOVER_COLOR = (0.55, 1.0, 0.70, 1.0)  # green: clicking will match
+# Bright, but *not* green: hovering a side that is not being matched used to
+# turn it the same green as one that is, which put the two states one mouse
+# move apart and undid most of what the colours are for. White reads as "the
+# cursor is here"; whether clicking would match or refuse is the tooltip's
+# answer, and the red below is the refusal.
+SIDE_AVAILABLE_HOVER_COLOR = (0.92, 0.94, 0.96, 1.0)
 SIDE_BLOCKED_COLOR = (0.42, 0.42, 0.45, 0.45)
 SIDE_BLOCKED_HOVER_COLOR = (0.75, 0.40, 0.35, 0.95)  # red: clicking will refuse
 SIDE_WIDTH = 3.0
