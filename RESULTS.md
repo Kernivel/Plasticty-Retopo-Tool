@@ -12,7 +12,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 |---|---|
 | Generated | 2026-09-02 |
 | Blender | 5.1.1 |
-| Addon | 0.49.0 (2026-09-02-g) |
+| Addon | 0.50.0 (2026-09-02-h) |
 | Resolution | MID |
 | Fixture | `tests/fixtures/TestCases.blend`, 15 objects |
 

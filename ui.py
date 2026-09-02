@@ -91,12 +91,18 @@ def _draw_session(
     if phase == 'OBJECT':
         box.label(text="Pick an object", icon='EYEDROPPER')
         box.label(text="Click a Plasticity object in the viewport")
+        # Tab is the session's here too, on the *selected* object's retopology.
+        # Greyed out by its own poll when nothing selected has one, rather than
+        # hidden: the key is consumed in this phase either way, and a button
+        # that disappears reads as a feature that doesn't exist.
+        box.operator("retop.tweak_mesh",
+                     text=f"Hand-Edit Selected ({keymap.describe('hand_edit')})",
+                     icon='EDITMODE_HLT')
     elif phase == 'PATCH':
         box.label(text="Pick a surface", icon='RESTRICT_SELECT_OFF')
-        # Offered here and nowhere else, for the same reason Tab is bound here
-        # and nowhere else: a patch open for adjustment has its faces out of
-        # the result mesh, and Edit Mode would discard the snapshot that puts
-        # them back.
+        # Not offered while a patch is open for adjustment, for the same reason
+        # Tab is not the trip there: that patch has its faces out of the result
+        # mesh, and Edit Mode would discard the snapshot that puts them back.
         box.operator("retop.tweak_mesh",
                      text=f"Hand-Edit Mesh ({keymap.describe('hand_edit')})",
                      icon='EDITMODE_HLT')

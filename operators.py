@@ -1341,6 +1341,33 @@ class RETOP_OT_session(bpy.types.Operator):
         operator(**keymap.properties_of(action_id))
         return True
 
+    def _dispatch_bound(
+        self, context: bpy.types.Context, event: bpy.types.Event
+    ) -> bool:
+        """Run whichever action this key means right now. Returns whether the
+        event was consumed.
+
+        Several actions can share a key -- three share `TAB` -- so this walks
+        them in declaration order and runs the first whose poll passes, which
+        is what Blender itself does with keymap items. Taking the first *match*
+        instead resolved every Tab to U/V, whose poll fails outside ADJUST, and
+        the key then fell through to the keymap to be answered by whichever
+        item happened to be registered first: it worked, but by an ordering
+        nothing states, and in the OBJECT phase it reached Blender's own
+        `object.editmode_toggle` -- Edit Mode on the CAD object, mid-session.
+
+        When none of them polls, a key Blender claims is still consumed and the
+        refusal reported (see `_MUST_CONSUME`).
+        """
+        candidates = keymap.session_actions_for(event)
+        for action_id in candidates:
+            if keymap.action_is_live(action_id):
+                return self._run_bound_action(context, action_id)
+        for action_id in candidates:
+            if action_id in self._MUST_CONSUME:
+                return self._run_bound_action(context, action_id)
+        return False
+
     def _set_typed(self, value: str) -> None:
         # Scene state, not an attribute on this instance: the keys that clear
         # it -- U/V, N-gon mode, the span wheel -- are real operators now, and
@@ -1589,8 +1616,7 @@ class RETOP_OT_session(bpy.types.Operator):
         # Clicks are excluded: their meaning depends on what is under the
         # cursor, so the picker below resolves them instead.
         if event.type not in {'LEFTMOUSE', 'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
-            bound = keymap.session_action_for(event)
-            if bound is not None and self._run_bound_action(context, bound):
+            if self._dispatch_bound(context, event):
                 return {'RUNNING_MODAL'}
 
         if state.session_phase == 'ADJUST':

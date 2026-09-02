@@ -161,32 +161,77 @@ def _matches(kmi: bpy.types.KeyMapItem, event: object) -> bool:
     return True
 
 
-def session_action_for(event: object) -> str | None:
-    """The SESSION action `event` asks for, or None.
+def session_actions_for(event: object) -> list[str]:
+    """Every SESSION action `event` asks for, in declaration order.
 
-    The modal dispatches these itself rather than letting them fall through to
-    the keymap -- see the module docstring for why a keymap item cannot be
-    relied on to win against a mode keymap.
+    More than one, because three actions share `TAB` on purpose -- U/V while
+    adjusting, hand-edit while picking, back-from-hand-edit while editing --
+    with mutually exclusive polls. Blender resolves that by running the first
+    item whose poll passes, and the modal has to do the same rather than take
+    the first *match*: taking the first match resolved every Tab to U/V, whose
+    poll fails outside ADJUST, and the key then fell through to the keymap and
+    was answered by whichever item happened to be registered first. It worked,
+    but only by an ordering nothing states, and in the OBJECT phase it reached
+    Blender's own `object.editmode_toggle` -- Edit Mode on the CAD object.
     """
+    matched = []
     for action_id in ACTION_IDS:
         if scope_of(action_id) != SESSION:
             continue
         for kmi in items_for(action_id):
             if _matches(kmi, event):
-                return action_id
+                matched.append(action_id)
+                break
+    if matched or _registered:
+        return matched
     # Nothing registered (no addon keyconfig, i.e. --background): fall back to
     # the declaration, so the dispatch is still testable headless.
-    if not _registered:
-        for action_id in ACTION_IDS:
-            if scope_of(action_id) != SESSION:
-                continue
-            for binding in default_bindings(action_id):
-                if (binding["type"] == getattr(event, "type", None)
-                        and getattr(event, "value", None) == 'PRESS'
-                        and all(bool(binding.get(m)) == bool(getattr(event, m, False))
-                                for m in ("ctrl", "shift", "alt"))):
-                    return action_id
-    return None
+    for action_id in ACTION_IDS:
+        if scope_of(action_id) != SESSION:
+            continue
+        for binding in default_bindings(action_id):
+            if (binding["type"] == getattr(event, "type", None)
+                    and getattr(event, "value", None) == 'PRESS'
+                    and all(bool(binding.get(m)) == bool(getattr(event, m, False))
+                            for m in ("ctrl", "shift", "alt"))):
+                matched.append(action_id)
+                break
+    return matched
+
+
+def action_is_live(action_id: str) -> bool:
+    """Whether this action's operator would run right now.
+
+    Reads the operator rather than the phase: the poll *is* where the phase
+    logic lives (see prefs.py), and duplicating it here is how the two would
+    come to disagree.
+    """
+    idname = operator_of(action_id)
+    if "." not in idname:
+        return False
+    operator = getattr(bpy.ops.retop, idname.split(".", 1)[1], None)
+    if operator is None:
+        return False
+    try:
+        return bool(operator.poll())
+    except Exception:
+        return False
+
+
+def session_action_for(event: object) -> str | None:
+    """The SESSION action `event` asks for, or None.
+
+    The one whose poll passes, when several share the key; the first match
+    otherwise, so a refusal can still be reported against the action the user
+    meant. The modal dispatches these itself rather than letting them fall
+    through to the keymap -- see the module docstring for why a keymap item
+    cannot be relied on to win against a mode keymap.
+    """
+    matched = session_actions_for(event)
+    for action_id in matched:
+        if action_is_live(action_id):
+            return action_id
+    return matched[0] if matched else None
 
 
 def remember(action_id: str, kmi: bpy.types.KeyMapItem) -> None:

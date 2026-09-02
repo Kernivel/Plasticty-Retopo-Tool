@@ -221,8 +221,96 @@ again = pr.mesh_build.repair_manual_edits(bpy.context, obj)
 check("repairing a clean mesh is a no-op", again == (0, 0), again)
 
 # ---------------------------------------------------------------------------
+# Tab belongs to the session in the OBJECT phase too
+# ---------------------------------------------------------------------------
+# Between objects the session holds none, and Tab used to fall through to
+# Blender -- which put the CAD *source* into Edit Mode, the one mesh nothing
+# here ever wants edited by hand. The selection answers instead.
+previous_phase = state.session_phase
+previous_object = state.session_object_name
+state.session_phase = 'OBJECT'
+state.session_object_name = ""
+bpy.context.view_layer.objects.active = obj
+obj.select_set(True)
+check("with an object selected, Tab opens its retopology",
+      pr.tweak.can_tweak(bpy.context) is None, pr.tweak.can_tweak(bpy.context))
+check("and it resolves to the source, not the result",
+      pr.tweak._session_source(bpy.context) is obj,
+      pr.tweak._session_source(bpy.context))
+
+# Selecting the retopology itself means the same thing: it is the mesh being
+# edited, and `<X>_Retop` names X the same way the session entry resolves it.
+result_obj = bpy.data.objects[pr.mesh_build.result_object_name_for(obj)]
+obj.select_set(False)
+result_obj.select_set(True)
+bpy.context.view_layer.objects.active = result_obj
+check("selecting the retopology resolves to the same source",
+      pr.tweak._session_source(bpy.context) is obj,
+      pr.tweak._session_source(bpy.context))
+
+# Nothing selected that has any retopology: refused with a reason, and the
+# refusal is what the modal reports -- Tab is consumed either way, so it can
+# never reach `object.editmode_toggle` while a session runs.
+result_obj.select_set(False)
+for other in bpy.context.selected_objects:
+    other.select_set(False)
+bpy.context.view_layer.objects.active = None
+reason = pr.tweak.can_tweak(bpy.context)
+check("with nothing to edit it refuses", reason is not None, reason)
+check("and says what to select", reason and "select" in reason.lower(), reason)
+check("hand_edit is a key the modal must consume even when it refuses",
+      "hand_edit" in pr.operators.RETOP_OT_session._MUST_CONSUME)
+
+bpy.context.view_layer.objects.active = obj
+obj.select_set(True)
+state.session_phase = previous_phase
+state.session_object_name = previous_object
+
+
+# ---------------------------------------------------------------------------
 # Where the modal sends Tab
 # ---------------------------------------------------------------------------
+# Three actions share Tab, with mutually exclusive polls, and the modal has to
+# resolve it the way Blender resolves a keymap: the first one whose poll
+# passes. Taking the first *match* meant every Tab resolved to U/V and fell
+# through to the keymap when that poll failed -- which worked by an ordering
+# nothing states, and in the OBJECT phase reached Blender's own Tab.
+class _Tab:
+    type = 'TAB'
+    value = 'PRESS'
+    ctrl = shift = alt = oskey = False
+
+
+check("three actions answer to Tab",
+      pr.keymap.session_actions_for(_Tab()) ==
+      ["span_axis", "hand_edit", "end_tweak"],
+      pr.keymap.session_actions_for(_Tab()))
+
+state.session_phase = 'PATCH'
+check("while picking, Tab is the hand-edit trip",
+      pr.keymap.session_action_for(_Tab()) == "hand_edit",
+      pr.keymap.session_action_for(_Tab()))
+state.session_phase = 'TWEAK'
+check("inside the trip, Tab is the way back",
+      pr.keymap.session_action_for(_Tab()) == "end_tweak",
+      pr.keymap.session_action_for(_Tab()))
+state.session_phase = 'ADJUST'
+pr.operators.set_active_patch(bpy.context, obj, 1)
+check("with a patch open, Tab is U/V and nothing else -- the one phase this "
+      "must not take over",
+      pr.keymap.session_action_for(_Tab()) == "span_axis",
+      pr.keymap.session_action_for(_Tab()))
+bpy.ops.retop.clear_preview()
+pr.operators.restore_reedit_removal(bpy.context)
+state.session_phase = 'PATCH'
+
+state.session_active = False
+check("with no session, no Tab action is live",
+      not any(pr.keymap.action_is_live(a)
+              for a in ("span_axis", "hand_edit", "end_tweak")))
+state.session_active = True
+
+
 check("Tab is still on the pass-through list for the panel",
       'TAB' in pr.operators.PANEL_EVENTS)
 check("the phase exists", 'TWEAK' in
@@ -274,6 +362,45 @@ else:
     bpy.ops.object.mode_set(mode='OBJECT')
     check("and starts again once Blender is back in Object Mode",
           bpy.ops.retop.session.poll())
+
+# ---------------------------------------------------------------------------
+# The whole round trip, taken from the OBJECT phase
+# ---------------------------------------------------------------------------
+# The phase it started from is the phase it has to come back to: a Tab taken
+# between objects was never a choice of object, so landing in PATCH would claim
+# the session had entered one. And the repair still has to run, which is the
+# reason the source is remembered for the trip -- the session holds none here.
+pr.operators.enter_session_object(bpy.context, obj)
+pr.operators.exit_session_object(bpy.context)
+check("the session is between objects", state.session_phase == 'OBJECT'
+      and state.session_object_name == "", state.session_phase)
+
+bpy.context.view_layer.objects.active = obj
+obj.select_set(True)
+error = pr.tweak.enter_tweak(bpy.context)
+if error is not None and "Edit Mode" in error:
+    print(f"[SKIP] no Edit Mode in this build: {error}")
+else:
+    check("Tab from the OBJECT phase opens the trip", error is None, error)
+    check("on the retopology, not the CAD object",
+          bpy.context.view_layer.objects.active
+          is bpy.data.objects[pr.mesh_build.result_object_name_for(obj)],
+          bpy.context.view_layer.objects.active)
+    check("and it remembered which source the trip is about",
+          state.tweak_source_object == obj.name, state.tweak_source_object)
+    check("and where to go back to", state.tweak_return_phase == 'OBJECT',
+          state.tweak_return_phase)
+
+    pr.tweak.exit_tweak(bpy.context)
+    check("coming back lands in the phase it left from",
+          state.session_phase == 'OBJECT', state.session_phase)
+    check("and spends what it remembered",
+          state.tweak_source_object == "" and state.tweak_return_phase == "",
+          f"{state.tweak_source_object!r} / {state.tweak_return_phase!r}")
+    check("with the tool settings back", not tool_settings.use_snap,
+          tool_settings.use_snap)
+
+pr.operators.end_session(bpy.context)
 
 pr.unregister()
 

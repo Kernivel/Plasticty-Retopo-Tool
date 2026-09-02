@@ -500,6 +500,14 @@ class RetopPatchState(bpy.types.PropertyGroup):
         name="Saved Tool Settings", default="")
     tweak_return_object: bpy.props.StringProperty(
         name="Hand-edit Return Object", default="")
+    # The object the round trip is about, and the phase it started from.
+    # Neither is derivable afterwards when Tab was pressed in the OBJECT phase:
+    # the session holds no object there, and the repair on the way back needs
+    # one. Same reasoning as the settings snapshot for living on the scene.
+    tweak_source_object: bpy.props.StringProperty(
+        name="Hand-edit Source Object", default="")
+    tweak_return_phase: bpy.props.StringProperty(
+        name="Hand-edit Return Phase", default="")
 
     # --- symmetry (see mesh_build.set_mirror_axes) ---
     #

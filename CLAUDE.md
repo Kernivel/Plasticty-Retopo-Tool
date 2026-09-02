@@ -648,9 +648,11 @@ Ctrl+Z is deliberately *not* one of them: the modal passes it through to
 Blender, and the session's own undo steps (one per committed patch) are what
 make that mean "take the last patch back" instead of "roll the session back".
 
-**Tab is per phase, and in `ADJUST` it is the only one the session keeps.**
-In `PATCH` it opens the hand-edit round trip below; in `OBJECT` it is not the
-session's at all and falls through to Blender. In `ADJUST` it is U/V — and it
+**Tab is per phase, and every phase of a session answers it.**
+In `PATCH` it opens the hand-edit round trip below; in `OBJECT` it opens the
+*selected* object's retopology (see `tweak._session_source`) — it used to fall
+through to Blender there, which put the CAD **source** into Edit Mode, the one
+mesh nothing here ever wants edited by hand. In `ADJUST` it is U/V — and it
 is still swallowed on a single-span generator, because a patch is open there
 and letting Blender toggle Edit Mode would take the session out from under it,
 but it now *reports* that instead of doing nothing. A key that does nothing and
@@ -977,11 +979,22 @@ time.
 
 **The `poll` is where the phase logic lives.** Every action is offered whether
 a session is running or not, so each operator polls `session_active` and its
-phases. Three actions share `TAB` — U/V in `ADJUST`, hand-edit in `PATCH`,
-back-from-hand-edit in `TWEAK` — with mutually exclusive polls, so the first
-whose poll passes is the one that runs. That is the "one key, two meanings"
-design expressed as data instead of spelled out. With no session, all three
-fail and `Tab` belongs to Blender again.
+phases. Three actions share `TAB` — U/V in `ADJUST`, hand-edit in `PATCH` and
+`OBJECT`, back-from-hand-edit in `TWEAK` — with mutually exclusive polls, so
+the first whose poll passes is the one that runs. That is the "one key, two
+meanings" design expressed as data instead of spelled out. With no session, all
+three fail and `Tab` belongs to Blender again.
+
+**And the modal resolves a shared key the way Blender does: first poll that
+passes, not first match.** `keymap.session_actions_for` returns *every* action
+bound to the event and `_dispatch_bound` walks them. Returning only the first
+match resolved every `Tab` to U/V, whose poll fails outside `ADJUST`; the key
+then fell through to the keymap and was answered by whichever item happened to
+be registered first. It worked — but by an ordering nothing states, it made
+`_modal_tweak`'s own `end_tweak` branch dead code, and in the `OBJECT` phase it
+reached Blender's `object.editmode_toggle`. When none of the candidates polls,
+a key Blender claims is still consumed (`_MUST_CONSUME`) and the refusal
+reported, so `Tab` can never leak mid-session.
 
 **No key of the addon's is live outside a session.** The session's keys never
 were — every one of those operators polls `session_active` — but the three
@@ -1166,13 +1179,23 @@ module global so an addon reload mid-edit doesn't lose it. It is JSON, so sets
 Blender versions and a missing name must be skipped symmetrically in both
 directions.
 
-**Only from `PATCH`, and that is not a convenience.** A re-edit has the
-patch's faces *out* of the result mesh with only a snapshot datablock to put
-them back, and anything written to a mesh Blender holds in Edit Mode is
-discarded on exit — the patch would be gone for good. That is the same rule
-`_leave_for_other_mode` already enforces for the reverse direction, and
-`can_tweak` is where the key and the panel button both read it, so they refuse
-with the same reason instead of one of them silently doing nothing.
+**From `PATCH` and from `OBJECT`, never from `ADJUST`, and that last one is
+not a convenience.** A re-edit has the patch's faces *out* of the result mesh
+with only a snapshot datablock to put them back, and anything written to a mesh
+Blender holds in Edit Mode is discarded on exit — the patch would be gone for
+good. That is the same rule `_leave_for_other_mode` already enforces for the
+reverse direction, and `can_tweak` is where the key and the panel button both
+read it, so they refuse with the same reason instead of one of them silently
+doing nothing.
+
+**In `OBJECT` the session holds no object, so the selection names one.**
+`_session_source` resolves it the way `operators.resolve_session_object` does
+(pointing at `<X>_Retop` means X), active object first. Two things then have to
+survive the trip, because neither is derivable on the way back: which source it
+was about — `repair_manual_edits`, the whole reason `Tab` is ours rather than
+Blender's, needs it — and which phase it started from, since landing in `PATCH`
+would claim the session had entered an object it never did
+(`tweak_source_object` / `tweak_return_phase`).
 
 **The trip has to be closed even when Tab didn't close it.** Leaving Edit Mode
 by the mode dropdown, by a script or by an undo fires no event of its own, so

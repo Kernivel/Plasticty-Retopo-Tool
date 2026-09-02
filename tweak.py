@@ -138,14 +138,40 @@ def apply_tool_settings(
             pass
 
 
+def _session_source(context: bpy.types.Context) -> bpy.types.Object | None:
+    """The object whose retopology Tab should open.
+
+    The session's own while one is entered. In the `OBJECT` phase there is none
+    -- the session is between objects -- and Tab there used to fall through to
+    Blender, which put the CAD *source* into Edit Mode: the one mesh nothing in
+    this addon ever wants edited by hand. So the selection answers instead,
+    resolved the way `operators.resolve_session_object` resolves it (pointing
+    at `<X>_Retop` means X), and the active object is asked before the rest of
+    the selection because that is what "the object I am looking at" means.
+    """
+    state = context.scene.plasticity_retop
+    entered = bpy.data.objects.get(state.session_object_name)
+    if entered is not None:
+        return entered
+
+    candidates = [context.view_layer.objects.active]
+    candidates += [obj for obj in context.selected_objects]
+    for obj in candidates:
+        if obj is None:
+            continue
+        source = mesh_build.source_object_for_result(obj) or obj
+        if bpy.data.objects.get(mesh_build.result_object_name_for(source)):
+            return source
+    return None
+
+
 def _result_object_for_session(
     context: bpy.types.Context,
 ) -> tuple[bpy.types.Object | None, bpy.types.Object | None, str | None]:
     """(source, result, error). Both objects or an error, never a mix."""
-    state = context.scene.plasticity_retop
-    source = bpy.data.objects.get(state.session_object_name)
+    source = _session_source(context)
     if source is None:
-        return None, None, "No object in this session to hand-edit"
+        return None, None, "Select the object whose retopology you want to edit"
     result = bpy.data.objects.get(mesh_build.result_object_name_for(source))
     if result is None or len(result.data.polygons) == 0:
         return source, None, (f"Nothing to hand-edit yet: '{source.name}' has no "
@@ -162,8 +188,12 @@ def can_tweak(context: bpy.types.Context) -> str | None:
     state = context.scene.plasticity_retop
     if not state.session_active:
         return "No retop session is running"
-    if state.session_phase != 'PATCH':
-        return "Only while picking a surface: commit or discard the patch first"
+    if state.session_phase not in ('PATCH', 'OBJECT'):
+        # ADJUST owns Tab (it is U/V there) and a patch is open on the result
+        # mesh: a re-edit has its faces *out* of it with only a snapshot to put
+        # them back, and anything written to a mesh Blender holds in Edit Mode
+        # is discarded on exit. TWEAK is already inside the trip.
+        return "Commit or discard the patch first"
     if context.mode != 'OBJECT':
         return "Blender is not in Object Mode"
     _source, _result, error = _result_object_for_session(context)
@@ -211,6 +241,13 @@ def enter_tweak(context: bpy.types.Context) -> str | None:
     except RuntimeError:
         return f"'{result.name}' is not in the current view layer"
     context.view_layer.objects.active = result
+
+    # Which object this trip is about, and where to go back to. In the OBJECT
+    # phase neither is derivable afterwards: the session holds no object, and
+    # `repair_manual_edits` -- the whole reason Tab is ours rather than
+    # Blender's -- needs one to re-adopt the faces a knife cut left untracked.
+    state.tweak_source_object = source.name
+    state.tweak_return_phase = state.session_phase
 
     state.tweak_saved_tool_settings = json.dumps(snapshot_tool_settings(context))
     apply_tool_settings(context, _wanted_settings(state))
@@ -263,7 +300,9 @@ def exit_tweak(context: bpy.types.Context) -> tuple[int, int]:
     restore_tool_settings(context)
 
     repaired = (0, 0)
-    source = bpy.data.objects.get(state.session_object_name)
+    source = (bpy.data.objects.get(state.tweak_source_object)
+              or bpy.data.objects.get(state.session_object_name))
+    state.tweak_source_object = ""
     if source is not None:
         repaired = mesh_build.repair_manual_edits(context, source)
 
@@ -278,5 +317,9 @@ def exit_tweak(context: bpy.types.Context) -> tuple[int, int]:
         except RuntimeError:
             pass
 
-    state.session_phase = 'PATCH'
+    # Back to the phase the trip started from: a Tab taken in the OBJECT phase
+    # was never a choice of object, so landing in PATCH would claim the session
+    # had entered one.
+    state.session_phase = state.tweak_return_phase or 'PATCH'
+    state.tweak_return_phase = ""
     return repaired

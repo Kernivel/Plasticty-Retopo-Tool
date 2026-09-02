@@ -195,6 +195,12 @@ def keybinds_for(
     if phase == 'OBJECT':
         return [
             ("Click", "Enter object"),
+            # Tab is the session's here too: it opens the *selected* object's
+            # retopology in Edit Mode. Advertised even though it can refuse
+            # (nothing selected has any retopology yet), because the modal
+            # consumes it either way -- letting it through would put the CAD
+            # object into Edit Mode, which is the one thing nobody wants.
+            (key("hand_edit"), "Hand-edit mesh"),
             cad_edges,
             see_through,
             (key("back"), "End session"),
