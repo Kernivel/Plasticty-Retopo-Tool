@@ -58,7 +58,8 @@ class SideReference:
 
     __slots__ = ("index", "loop", "in_loop", "points", "match_points",
                  "neighbours", "reason", "strict_points", "source_points",
-                 "match_world", "source_world")
+                 "match_world", "source_world", "applied", "applied_points",
+                 "outvoted")
 
     def __init__(
         self,
@@ -105,6 +106,18 @@ class SideReference:
         # Every Plasticity face across this side, most-covering first. The
         # match is confined to these; see _side_neighbours.
         self.neighbours = list(neighbours or [])
+        # Whether this side's polyline was actually *replaced* this generation,
+        # and by which points. "Could be matched" and "is being matched" are
+        # different questions and the viewport used to answer only the first:
+        # a side that lost a span collision, one the resolved span no longer
+        # honours and one nobody asked to match all drew the same green as a
+        # side whose vertices the preview is genuinely reproducing. Set by
+        # `apply_side_matches`, which is the only place that knows.
+        self.applied = False
+        self.applied_points: "list[mathutils.Vector]" = []
+        # It wanted a match and lost -- another side drove the same span, or
+        # the span the user typed can no longer reproduce these points.
+        self.outvoted = False
 
     @property
     def neighbour(self) -> int | None:
@@ -311,11 +324,29 @@ def span_key_for(generator_name: str, reference: SideReference) -> str:
     """
     if generator_name == constants.NGON:
         return f"side:{reference.index}"
+    if generator_name == constants.RING:
+        # A ring's two loops both feed "around", but they are not in
+        # competition the way a quad's opposite sides are: the generator runs
+        # one rung from outer[i] to inner[i], so both rims *can* be reproduced
+        # at once -- as long as they agree on the count, which is exactly what
+        # `_honours` checks once the span is resolved. Keyed per loop so both
+        # get that chance; a shared key let the second rim's committed
+        # neighbour be dropped even when it wanted the very same number.
+        return f"span_u@{reference.loop}"
     if generator_name == constants.QUAD:
         return "span_u" if reference.in_loop % 2 == 0 else "span_v"
     if generator_name in constants.TWO_SPAN_GENERATORS:
         return "span_u"
     return "span"
+
+
+def span_base(key: str) -> str:
+    """The span a key drives, without the loop it was qualified by.
+
+    Only a ring qualifies its key (`span_u@0`, `span_u@1`); everything else
+    hands its own name straight back.
+    """
+    return key.split("@", 1)[0]
 
 
 def _match_candidates(
@@ -365,6 +396,8 @@ def _winning_matches(
     """
     best = {}
     losers = []
+    for reference, _points, _pinned in candidates:
+        reference.outvoted = False  # re-decided every generation
     for reference, points, pinned in candidates:
         key = span_key_for(generator_name, reference)
         rank = (1 if pinned else 0, len(points), -reference.index)
@@ -375,6 +408,8 @@ def _winning_matches(
             best[key] = (rank, reference, points, pinned)
         else:
             losers.append(reference)
+    for reference in losers:
+        reference.outvoted = True
     return ({key: (reference, points, pinned)
              for key, (_rank, reference, points, pinned) in best.items()},
             losers)
@@ -409,7 +444,7 @@ def _honours(
     """
     if spans is None or key.startswith("side:"):
         return True  # n-gon sides carry their own count; nothing to disagree with
-    return spans.get(key) == len(points) - 1
+    return spans.get(span_base(key)) == len(points) - 1
 
 
 def apply_side_matches(
@@ -441,12 +476,22 @@ def apply_side_matches(
         losers = []
 
     counts = {}
+    for reference in active_sides():
+        reference.applied = False   # decided afresh every generation
+        reference.applied_points = []
     for key, (reference, points, _pinned) in winners.items():
         if not _honours(key, points, spans):
+            # It wanted a match the resolved span can no longer reproduce, so
+            # the side keeps the boundary the CAD drew. Say so rather than
+            # leaving it looking matched: that is the state the viewport had no
+            # way of showing.
+            reference.outvoted = True
             continue
         original = prepared.loops_sides[reference.loop][reference.in_loop]
         prepared.loops_sides[reference.loop][reference.in_loop] = points
         counts[reference.index] = len(points) - 1
+        reference.applied = True
+        reference.applied_points = points
 
         # If the match moved this side's first point, the corner is no longer
         # the source vertex it is named after -- and a corner welds *by
@@ -462,6 +507,49 @@ def apply_side_matches(
                 corner_ids[reference.in_loop] = mesh_build.NO_SOURCE
 
     return counts, [reference.index for reference in losers]
+
+
+def status_of(
+    reference: SideReference, pin_kind: str | None = None
+) -> tuple[str, str]:
+    """(what this side is doing, why) -- one short line each.
+
+    Written once here because the viewport tooltip and the panel have to say
+    the same thing: "this side can be matched" and "this side is being matched"
+    are different answers, and showing only the first is what made the feature
+    read as arbitrary. A side can border a finished neighbour and still not be
+    reproducing it -- it lost the span collision, or the span was typed by hand
+    since -- and nothing said so.
+    """
+    who = (f"patch {reference.neighbour}" if reference.neighbour is not None
+           else "the committed neighbour")
+    pinned = " (pinned)" if pin_kind else ""
+
+    if reference.applied:
+        if pin_kind == PIN_SOURCE:
+            return ("Selected for surface matching",
+                    "follows this edge's own CAD tessellation (pinned)")
+        return ("Selected for surface matching",
+                f"reproduces {who}'s vertices{pinned}")
+    if reference.outvoted:
+        return ("Not selected for surface matching",
+                "another side drives the same span, or the span was typed by hand")
+    if reference.available:
+        return ("Not selected for surface matching",
+                f"click to match it to {who}")
+    return ("Not selected for surface matching",
+            reference.reason or "nothing to match along this edge")
+
+
+def applied_loops() -> set[int]:
+    """Boundary loops whose points a match has replaced this generation.
+
+    A ring has to know: a loop carrying a committed neighbour's own vertices
+    must be reproduced exactly, so it may not be phase-aligned or resampled --
+    doing that is what threw the match away and left the two rims half a step
+    apart. See `generators.ring.generate`.
+    """
+    return {reference.loop for reference in active_sides() if reference.applied}
 
 
 def ngon_side_segments(

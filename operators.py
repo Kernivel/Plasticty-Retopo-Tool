@@ -435,15 +435,23 @@ def _generate_for_face(
     # the control would look broken. Changing it away from the neighbour's
     # count instead drops that substitution: the two can no longer weld, which
     # is what asking for a different count means.
-    for key, (_reference, points, pinned) in winners.items():
+    #
+    # Sorted, and weakest first, so the strongest match is the one that ends up
+    # driving the span: a ring keys its two rims separately (both drive
+    # "around"), so dict order would otherwise decide which committed neighbour
+    # the band reproduces. `_honours` then drops whichever rim the resolved
+    # count can no longer reproduce.
+    for key, (_reference, points, pinned) in sorted(
+            winners.items(), key=lambda item: (item[1][2], len(item[1][1]))):
         if key.startswith("side:"):
             continue
         if not (pinned or span_overrides is None):
             continue
         count = len(points) - 1
-        if key == "span_u":
+        base = sidematch.span_base(key)
+        if base == "span_u":
             span_u = count
-        elif key == "span_v":
+        elif base == "span_v":
             span_v = count
         else:
             span = count
@@ -454,6 +462,12 @@ def _generate_for_face(
     bvh = (geometry.build_bvh_for_polygons(mesh, prepared.patch.poly_indices)
            if state.reproject else None)
     span_settings = {"span_u": span_u, "span_v": span_v, "span": span}
+    if prepared.is_ring:
+        # Which loops now carry a neighbour's own vertices rather than a sample
+        # of the CAD boundary. The ring has to know: a matched rim may not be
+        # phase-aligned or resampled, or the match is thrown away and the two
+        # rims come back half a step apart. See generators/ring.py.
+        span_settings["locked_loops"] = sorted(sidematch.applied_loops())
     result = generator.generate(generation_input, span_settings, bvh=bvh)
 
     mesh_build.update_preview_object(context, obj, result, corner_source_ids)
@@ -919,6 +933,7 @@ def end_session(context: bpy.types.Context, push: bool = True) -> None:
     # a deliberate moment, unlike a hover.
     mesh_build.remove_preview_object()
     overlay.hover_committed = False
+    overlay.cursor_window = None
     # An in-flight re-edit is rolled back, never silently dropped: its patch was
     # removed from the result mesh on pick and was never re-committed.
     restore_reedit_removal(context)
@@ -1522,6 +1537,12 @@ class RETOP_OT_session(bpy.types.Operator):
         # which point_in_region reads as "outside".
         over_viewport = self._cursor_over_viewport(context, event)
         self._update_cursor(context, over_viewport)
+        # Where the tooltip goes. A draw handler has no event to read the
+        # pointer from, so the modal leaves it where the overlay can find it --
+        # the same arrangement as `overlay.hover_committed`, and cleared the
+        # moment the pointer is elsewhere so a stale tooltip can't linger.
+        overlay.cursor_window = ((event.mouse_x, event.mouse_y)
+                                 if over_viewport else None)
 
         # Anything outside the 3D viewport (N-panel, properties, ...) must stay
         # fully interactive -- that's where spans get adjusted during ADJUST.

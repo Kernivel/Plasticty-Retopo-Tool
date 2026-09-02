@@ -12,6 +12,7 @@ would crash the next Ctrl+Z -- see the note in mesh_build. Everything expensive
 they show is computed and cached elsewhere for the same reason: a redraw is not
 a place to walk a mesh.
 """
+import math
 from typing import TYPE_CHECKING
 
 import blf
@@ -47,13 +48,20 @@ _points_handle: object | None = None
 VERT_COLOR = (1.0, 0.85, 0.2, 1.0)
 VERT_OUTLINE_COLOR = (0.05, 0.05, 0.05, 0.9)
 VERT_SIZE = 11.0          # fallback when the scene property isn't there yet
-VERT_OUTLINE_RATIO = 1.45  # dark square behind the bright one
+VERT_OUTLINE_RATIO = 1.45  # dark disc behind the bright one
 
-# Drawn as screen-space quads rather than GL points. `gpu.state.point_size_set`
+# Drawn as screen-space geometry rather than GL points. `gpu.state.point_size_set`
 # is a no-op whenever the backend runs with program point size enabled -- the
 # shader has to write gl_PointSize then, and the builtin UNIFORM_COLOR one does
-# not -- which came out as 1px dots that ignored the size setting entirely.
-# Two triangles per dot always honour the pixels asked for.
+# not -- which came out as 1px dots that ignored the size setting entirely. A
+# fan of triangles per dot always honours the pixels asked for.
+#
+# A fan rather than the two triangles it started as: a square dot reads as a
+# handle you can grab, which none of these are -- they mark where a vertex is.
+# Twelve segments is where a dot this size stops looking like a polygon, and it
+# is divisible by four so the disc still measures exactly 2*half across, which
+# is what keeps the size setting checkable.
+DOT_SEGMENTS = 12
 
 # --- side reference picker (M in ADJUST) ---
 #
@@ -63,12 +71,36 @@ VERT_OUTLINE_RATIO = 1.45  # dark square behind the bright one
 # Hover brightens a side's *own* colour instead of replacing it: a single
 # hover colour hid the one thing worth knowing before clicking -- whether this
 # side can be matched at all -- and turned a refusal into a surprise.
-SIDE_AVAILABLE_COLOR = (0.20, 0.75, 0.38, 0.80)
-SIDE_AVAILABLE_HOVER_COLOR = (0.45, 1.0, 0.60, 1.0)
+# Four states, not three, and the fourth is the one that was missing: a side
+# that *is* being matched right now. "Could be matched" and "is reproducing the
+# neighbour's vertices" used to draw the same green, so a side that had lost a
+# span collision, or whose span the user had typed since, looked exactly like
+# one the preview was welding to -- which is most of why the feature read as
+# arbitrary. Green now means matched; a side that could be but isn't is grey,
+# like one with nothing to match, and the tooltip tells the two apart.
+SIDE_MATCHED_COLOR = (0.25, 0.95, 0.45, 0.95)
+SIDE_MATCHED_HOVER_COLOR = (0.60, 1.0, 0.75, 1.0)
+SIDE_SOURCE_COLOR = (1.0, 0.72, 0.25, 0.95)        # matched to its own CAD edge
+SIDE_SOURCE_HOVER_COLOR = (1.0, 0.85, 0.55, 1.0)
+SIDE_AVAILABLE_COLOR = (0.55, 0.60, 0.58, 0.55)    # could be matched, isn't
+SIDE_AVAILABLE_HOVER_COLOR = (0.55, 1.0, 0.70, 1.0)  # green: clicking will match
 SIDE_BLOCKED_COLOR = (0.42, 0.42, 0.45, 0.45)
 SIDE_BLOCKED_HOVER_COLOR = (0.75, 0.40, 0.35, 0.95)  # red: clicking will refuse
 SIDE_WIDTH = 3.0
+SIDE_MATCHED_WIDTH = 4.5
 SIDE_HOVER_WIDTH = 6.0
+
+# --- the tooltip on the hovered side ---
+#
+# Colour alone cannot say *why* a side is grey, and the panel is the wrong
+# place to read it: the pointer is already on the side, in the viewport, about
+# to click. Two lines by the cursor -- what the side is doing, and why.
+TOOLTIP_BG = (0.10, 0.10, 0.11, 0.90)
+TOOLTIP_TEXT = (0.95, 0.95, 0.95, 1.0)
+TOOLTIP_DETAIL = (0.72, 0.74, 0.76, 1.0)
+TOOLTIP_MATCHED = (0.45, 1.0, 0.60, 1.0)
+TOOLTIP_PAD = 8
+TOOLTIP_OFFSET = 18   # from the cursor, so the pointer never covers the text
 
 # --- the vertices a match would actually take ---
 #
@@ -113,6 +145,12 @@ TWO_SPAN_GENERATOR_NAMES = constants.TWO_SPAN_GENERATORS
 # The digits being typed are echoed from `state.typed_span`, not a module
 # global: the keys that clear it (U/V, N-gon, the span wheel) are real
 # operators now, and an operator cannot reach the running modal's attributes.
+
+# Where the pointer was when the modal last looked, in window coordinates, or
+# None when it is not over the viewport. The tooltip needs it and a draw
+# handler has no event to read it from -- same arrangement as
+# `hover_committed` below.
+cursor_window: "tuple[float, float] | None" = None
 
 # Set by the session modal when the patch under the cursor has already been
 # committed, so the hint reads "Re-edit patch" -- clicking it reopens it with
@@ -263,7 +301,10 @@ def _set_font_size(font_id: int, size: float) -> None:
         blf.size(font_id, size, 72)
 
 
-def _draw_key_background(x: float, y: float, width: float, height: float) -> None:
+def _draw_filled_rect(
+    x: float, y: float, width: float, height: float,
+    color: tuple[float, float, float, float],
+) -> None:
     vertices = (
         (x, y), (x + width, y),
         (x + width, y + height), (x, y + height),
@@ -274,9 +315,13 @@ def _draw_key_background(x: float, y: float, width: float, height: float) -> Non
 
     gpu.state.blend_set('ALPHA')
     shader.bind()
-    shader.uniform_float("color", KEY_BG_COLOR)
+    shader.uniform_float("color", color)
     batch.draw(shader)
     gpu.state.blend_set('NONE')
+
+
+def _draw_key_background(x: float, y: float, width: float, height: float) -> None:
+    _draw_filled_rect(x, y, width, height, KEY_BG_COLOR)
 
 
 def _draw() -> None:
@@ -294,6 +339,8 @@ def _draw() -> None:
     _draw_brep_vertices(context, state, region)
 
     scale = max(0.5, getattr(state, "overlay_scale", 1.0))
+    _draw_side_tooltip(state, region, scale)
+
     font_id = 0
     _set_font_size(font_id, FONT_SIZE * scale)
 
@@ -379,6 +426,7 @@ def _draw_side_references(state: "state_mod.RetopPatchState") -> None:
         return
 
     hovered = getattr(state, "hovered_side", -1)
+    pins = sidematch.side_override_map(state)
     shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
     viewport = gpu.state.viewport_get()
     shader.bind()
@@ -392,16 +440,88 @@ def _draw_side_references(state: "state_mod.RetopPatchState") -> None:
         if len(reference.points) < 2:
             continue
         is_hovered = reference.index == hovered
-        if reference.available:
-            color = SIDE_AVAILABLE_HOVER_COLOR if is_hovered else SIDE_AVAILABLE_COLOR
-        else:
-            color = SIDE_BLOCKED_HOVER_COLOR if is_hovered else SIDE_BLOCKED_COLOR
-        width = SIDE_HOVER_WIDTH if is_hovered else SIDE_WIDTH
+        color, width = _side_appearance(
+            reference, pins.get(reference.index), is_hovered)
         shader.uniform_float("lineWidth", width)
         shader.uniform_float("color", color)
         batch_for_shader(shader, 'LINE_STRIP', {"pos": reference.points}).draw(shader)
 
     gpu.state.blend_set('NONE')
+
+
+def _side_appearance(
+    reference: "sidematch.SideReference", pin_kind: str | None, hovered: bool
+) -> "tuple[tuple[float, float, float, float], float]":
+    """(colour, line width) for one side of the picker.
+
+    Green is reserved for a side whose vertices the preview is *actually*
+    reproducing; amber for one following its own CAD edge. Everything else is
+    grey, whether it could be matched or not -- the difference between those
+    two is what the tooltip is for, and painting them the same green was what
+    made a match look applied when it was not.
+    """
+    if reference.applied:
+        if pin_kind == sidematch.PIN_SOURCE:
+            return ((SIDE_SOURCE_HOVER_COLOR if hovered else SIDE_SOURCE_COLOR),
+                    SIDE_HOVER_WIDTH if hovered else SIDE_MATCHED_WIDTH)
+        return ((SIDE_MATCHED_HOVER_COLOR if hovered else SIDE_MATCHED_COLOR),
+                SIDE_HOVER_WIDTH if hovered else SIDE_MATCHED_WIDTH)
+    if reference.available:
+        return ((SIDE_AVAILABLE_HOVER_COLOR if hovered else SIDE_AVAILABLE_COLOR),
+                SIDE_HOVER_WIDTH if hovered else SIDE_WIDTH)
+    return ((SIDE_BLOCKED_HOVER_COLOR if hovered else SIDE_BLOCKED_COLOR),
+            SIDE_HOVER_WIDTH if hovered else SIDE_WIDTH)
+
+
+def _draw_side_tooltip(
+    state: "state_mod.RetopPatchState", region: bpy.types.Region, scale: float
+) -> None:
+    """What the side under the cursor is doing, said by the cursor.
+
+    Two lines: whether it is selected for surface matching, and why. Drawn from
+    the POST_PIXEL handler, next to the pointer rather than in a corner -- the
+    question is asked with the mouse already on the side.
+    """
+    if state.session_phase != 'ADJUST' or not getattr(state, "match_mode", False):
+        return
+    if cursor_window is None:
+        return
+
+    references = sidematch.active_sides()
+    index = getattr(state, "hovered_side", -1)
+    if not (0 <= index < len(references)):
+        return
+    reference = references[index]
+
+    pins = sidematch.side_override_map(state)
+    title, detail = sidematch.status_of(reference, pins.get(index))
+
+    font_id = 0
+    _set_font_size(font_id, FONT_SIZE * scale)
+    title_w, title_h = blf.dimensions(font_id, title)
+    detail_w, detail_h = blf.dimensions(font_id, detail)
+
+    pad = TOOLTIP_PAD * scale
+    line = max(title_h, detail_h) + 6 * scale
+    width = max(title_w, detail_w) + 2 * pad
+    height = 2 * line + 2 * pad - 6 * scale
+
+    x = cursor_window[0] - region.x + TOOLTIP_OFFSET * scale
+    y = cursor_window[1] - region.y + TOOLTIP_OFFSET * scale
+    # Kept inside the region: a tooltip half off the edge of the viewport is
+    # exactly the half you needed to read.
+    x = min(max(0.0, x), max(0.0, region.width - width))
+    y = min(max(0.0, y), max(0.0, region.height - height))
+
+    _draw_filled_rect(x, y, width, height, TOOLTIP_BG)
+
+    blf.color(font_id, *(TOOLTIP_MATCHED if reference.applied else TOOLTIP_TEXT))
+    blf.position(font_id, x + pad, y + pad + line - 6 * scale, 0)
+    blf.draw(font_id, title)
+
+    blf.color(font_id, *TOOLTIP_DETAIL)
+    blf.position(font_id, x + pad, y + pad - 6 * scale, 0)
+    blf.draw(font_id, detail)
 
 
 def _draw_points() -> None:
@@ -493,7 +613,7 @@ def _draw_match_points(
         for half, dot_color in (
                 (MATCH_DOT_SIZE * MATCH_DOT_OUTLINE_RATIO * 0.5, MATCH_DOT_OUTLINE),
                 (MATCH_DOT_SIZE * 0.5, color)):
-            vertices, indices = _quads_around(projected, half)
+            vertices, indices = _discs_around(projected, half)
             shader.uniform_float("color", dot_color)
             batch_for_shader(shader, 'TRIS', {"pos": vertices},
                              indices=indices).draw(shader)
@@ -663,27 +783,35 @@ def _draw_brep_vertices(
     shader.bind()
     for half, color in ((BREP_DOT_SIZE * 0.75, BREP_DOT_OUTLINE),
                         (BREP_DOT_SIZE * 0.5, BREP_DOT_COLOR)):
-        vertices, indices = _quads_around(projected, half)
+        vertices, indices = _discs_around(projected, half)
         shader.uniform_float("color", color)
         batch_for_shader(shader, 'TRIS', {"pos": vertices},
                          indices=indices).draw(shader)
     gpu.state.blend_set('NONE')
 
 
-def _quads_around(
-    centres: "list[mathutils.Vector]", half: float
+def _discs_around(
+    centres: "list[mathutils.Vector]", half: float, segments: int = DOT_SEGMENTS
 ) -> tuple[list[tuple[float, float]], list[tuple[int, int, int]]]:
-    """Two triangles per centre, as (vertices, indices) for a TRIS batch."""
+    """A triangle fan per centre, as (vertices, indices) for a TRIS batch.
+
+    Round rather than square: these mark where a vertex *is*, and a square dot
+    reads as a handle to grab. `segments` stays a multiple of four so the disc
+    measures exactly 2*half across and 2*half tall -- the size setting has to
+    stay something a test can measure.
+    """
     vertices = []
     indices = []
     for point in centres:
         base = len(vertices)
         x, y = point
-        vertices.extend((
-            (x - half, y - half), (x + half, y - half),
-            (x + half, y + half), (x - half, y + half),
-        ))
-        indices.extend(((base, base + 1, base + 2), (base, base + 2, base + 3)))
+        vertices.append((x, y))
+        for step in range(segments):
+            angle = 2.0 * math.pi * step / segments
+            vertices.append((x + half * math.cos(angle), y + half * math.sin(angle)))
+        for step in range(segments):
+            indices.append((base, base + 1 + step,
+                            base + 1 + (step + 1) % segments))
     return vertices, indices
 
 
@@ -721,11 +849,11 @@ def _draw_vertex_dots(
     gpu.state.blend_set('ALPHA')
     shader.bind()
 
-    # Dark square behind the bright one, so a dot stays readable over both a
+    # Dark disc behind the bright one, so a dot stays readable over both a
     # pale CAD surface and the dark background.
     for half, color in ((size * VERT_OUTLINE_RATIO * 0.5, VERT_OUTLINE_COLOR),
                         (size * 0.5, VERT_COLOR)):
-        vertices, indices = _quads_around(projected, half)
+        vertices, indices = _discs_around(projected, half)
         shader.uniform_float("color", color)
         batch_for_shader(shader, 'TRIS', {"pos": vertices},
                          indices=indices).draw(shader)

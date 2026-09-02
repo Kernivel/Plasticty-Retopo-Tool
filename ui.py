@@ -273,6 +273,7 @@ def _draw_match_block(
     """Matching a committed neighbour's density along a shared side."""
     references = sidematch.active_sides()
     available = [reference for reference in references if reference.available]
+    applied = [reference for reference in references if reference.applied]
 
     row = box.row(align=True)
     row.operator("retop.toggle_match_mode",
@@ -281,24 +282,31 @@ def _draw_match_block(
     if not references:
         return
 
+    # What is *being* matched comes first, because it is what the preview is
+    # made of. "Could be matched" is the second question, and reading only that
+    # one is what made the feature look as if it fired at random.
+    box.label(text=f"{len(applied)} of {len(references)} sides matched"
+                   + (f" ({len(available)} could be)" if available else ""),
+              icon='CHECKMARK' if applied else 'INFO')
+
     hovered = None
     if 0 <= state.hovered_side < len(references):
         hovered = references[state.hovered_side]
-    if hovered is not None and not hovered.available:
-        # Say it here as well as in the viewport: the reason is the actionable
-        # half, and a status-bar warning only shows up after a failed click.
+    if hovered is not None:
+        # The same words the viewport tooltip uses: one wording for one state,
+        # or the panel and the overlay disagree about the side under the cursor.
+        title, detail = sidematch.status_of(
+            hovered, sidematch.side_override_map(state).get(hovered.index))
         note = box.column(align=True)
-        note.alert = True
-        note.label(text=f"This side: {hovered.reason}", icon='ERROR')
+        note.alert = not hovered.applied and not hovered.available
+        note.label(text=title,
+                   icon='CHECKMARK' if hovered.applied else 'INFO')
+        note.label(text=detail)
 
-    if not available:
+    if not available and not applied:
         box.label(text="No side borders a committed patch", icon='INFO')
     elif state.match_mode:
-        box.label(text=f"Click a green side to match it ({len(available)} of "
-                       f"{len(references)})", icon='EYEDROPPER')
-    else:
-        box.label(text=f"{len(available)} of {len(references)} sides could be matched",
-                  icon='INFO')
+        box.label(text="Click a side to match it", icon='EYEDROPPER')
 
     if state.match_mode:
         box.label(text="Ctrl+click follows the CAD edge instead", icon='INFO')

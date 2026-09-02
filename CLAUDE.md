@@ -325,12 +325,15 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   point's nearest arc-length on the inner loop implies an offset; their
   **circular** mean is the answer, circular because 0 and L are the same
   offset and a plain average across the seam lands halfway round).
-  **Only on a cornerless rim.** A corner is an untouched source vertex welded
-  by identity, so moving one while keeping its name would make a later patch
-  reuse a vertex that is no longer there; a hole with real corners keeps them
-  and its shear. A phased rim's corner id is *dropped* instead — the list is
-  left short and the caller's `zip` does the rest — so it welds by proximity
-  like every other boundary point.
+  **Only on a cornerless rim, and never on a matched one.** A corner is an
+  untouched source vertex welded by identity, so moving one while keeping its
+  name would make a later patch reuse a vertex that is no longer there; a hole
+  with real corners keeps them and its shear. A phased rim's corner id is
+  emitted as `ring.NO_CORNER` instead — in place, not by shortening the list,
+  because the caller zips it against `corner_source_ids` positionally and the
+  outer loop's ids come first, so a short list stamps an outer id onto the
+  hole's vertex the moment it is the *outer* rim that got phased. A point with
+  no id welds by proximity like every other boundary point.
   **And a phased rim has to be reprojected.** Boundary rows are normally left
   exactly where the loops put them, because they are samples of the real
   boundary that a neighbour welds to. A phased one lands nowhere near a source
@@ -341,6 +344,37 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   `tests/test_ring_straightness.py` measures the angle between each rung and
   the radial it should lie along, and pins the *spread* as well as the worst
   case — a fix that merely averaged the error out would otherwise pass.
+- **A matched rim leads the band; it is never resampled onto the other one.**
+  Matching hands a side a committed neighbour's own vertices, and every other
+  generator reproduces them for free — `resample_polyline_by_arclength` returns
+  the points it was given when the count already matches. A ring did not. It
+  always led with `loops[0]` and phase-resampled the other rim onto it, so a
+  match landing on that rim was thrown away and the two rings came back half a
+  step apart — with a crack all the way round, which is what the fixture's 464
+  open boundary edges on Plate And Cylinder were. Which rim is `loops[0]` is
+  decided by *extent* (`sort_loops_outer_first`), and on a tube the two are
+  equal: the same match worked or didn't for no reason visible on screen, which
+  is the "matching is inconsistent" half of the report.
+  `span_settings["locked_loops"]` (filled from `sidematch.applied_loops()`)
+  names the loops carrying a match; the ring **leads with a locked one**, takes
+  `around` from its point count, and phases the *free* loop onto it instead.
+  A locked rim is not phased for the same reason a cornered one isn't, but not
+  for the same cause: its points are not a sample of a boundary at all.
+  **`align_rings` re-indexes the free loop, so its corners must be looked up
+  through the map it returns** — the lead loop maps to itself. Getting that
+  wrong stamps a loop's corner ids onto whatever vertices sit at those
+  positions, and a corner welds by identity: the neighbours then weld to points
+  on the far side of the band, which measured as a 4.9% deviation and a quad
+  spanning the whole part. `tests/test_ring_match.py`.
+- **A ring's two rims are keyed per loop, not against each other.** Every other
+  generator collides sides that share a span, because a grid has one count per
+  direction. A ring's rungs run `outer[i]` → `inner[i]`, so both rims *can* be
+  reproduced at once as long as they agree on the count — and whether they
+  agree is exactly what `_honours` checks once the span is resolved. Hence
+  `span_u@0` / `span_u@1` and `sidematch.span_base`, which is what every reader
+  of a span key (the winner-to-span loop in `_prepare_patch`, `_honours`) has
+  to go through. A shared key dropped the second rim's match even when it
+  wanted the very same number.
 - **Everything resolves through `<Source>_Retop`.** Rename or re-import the CAD
   object and its retopology becomes unreachable — a session on the new name
   starts a second result mesh that overlaps the first. `orphan_result_objects`
@@ -492,11 +526,14 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
 - **`gpu.state.point_size_set` cannot be trusted.** The backend ignores it
   whenever program point size is enabled — the shader has to write
   `gl_PointSize` then, and the builtin `UNIFORM_COLOR` one does not — which
-  came out as 1px dots that ignored their size setting entirely. The N-gon
-  vertex dots are screen-space quads (`_quads_around`, two triangles each),
-  drawn from the POST_PIXEL handler where the region and `region_data` are at
-  hand to project with. `tests/test_overlay.py` asserts the geometry is the
-  size asked for, and that nothing calls `point_size_set(` again.
+  came out as 1px dots that ignored their size setting entirely. Every dot is
+  screen-space geometry instead (`_discs_around`, a triangle fan each), drawn
+  from the POST_PIXEL handler where the region and `region_data` are at hand to
+  project with. Round rather than the two triangles it started as: a square dot
+  reads as a handle you can grab, and none of these are — they mark where a
+  vertex is. `DOT_SEGMENTS` stays a multiple of four so a disc still measures
+  exactly the size asked for; `tests/test_overlay.py` asserts that, and that
+  nothing calls `point_size_set(` again.
 - **The draw handlers are the one code Blender alone invokes**, so nothing
   else notices when they break. `overlay.enable()` once shipped raising
   `NameError` on a function an over-eager edit had deleted, with the whole
@@ -725,11 +762,13 @@ was committed with. `build_side_references` takes the face id explicitly.
 same span used to both get substituted, with the second silently winning the
 count — leaving the loser's points resampled to a number that was not theirs,
 i.e. the exact crack matching exists to close. `sidematch.span_key_for` names
-the span a side drives (an n-gon gets a key per side, so nothing collides),
-`_winning_matches` keeps one per key — a pin beats an automatic match, then the
-denser one wins — and only the winner is substituted. The rest keep the
-boundary the CAD drew, and `state.match_conflicts` tells the panel how many
-were outvoted.
+the span a side drives (an n-gon gets a key per side and a ring one per *loop*,
+so neither collides with itself), `_winning_matches` keeps one per key — a pin
+beats an automatic match, then the denser one wins — and only the winner is
+substituted. The rest keep the boundary the CAD drew, and
+`state.match_conflicts` tells the panel how many were outvoted. Every reader of
+a key goes through `sidematch.span_base`, since a ring's is qualified by its
+loop.
 
 **An automatic match seeds a span; a pin decides it.** Spans are resolved
 *before* any side is rewritten, and `sidematch._honours` then drops any match
@@ -751,6 +790,21 @@ Every refusal carries a `reason`, surfaced in the click warning and the panel,
 and the viewport **brightens a side's own colour on hover** rather than
 replacing it — a single hover colour hid the one thing worth knowing before
 clicking, which is whether the side can be matched at all.
+
+**Green means a side is being matched, not that it could be.** Those are
+different answers and the picker used to give only the second: a side that had
+lost a span collision, or whose span the user had typed since, drew exactly the
+same green as one the preview was welding to. `SideReference.applied` (set by
+`apply_side_matches`, which is the only place that knows) and `.outvoted` carry
+the difference; `overlay._side_appearance` maps it — green for a match being
+reproduced, amber for one following its own CAD edge, grey for everything else,
+whether it *could* be matched or not. What tells those last two apart is the
+**tooltip by the cursor**: `sidematch.status_of` returns the one wording the
+overlay and the panel both use ("Selected / Not selected for surface matching",
+plus why), so the two can't disagree about the side under the pointer. The
+tooltip needs the mouse and a draw handler has no event to read it from, so the
+modal leaves it in `overlay.cursor_window` — the same arrangement as
+`hover_committed`, cleared the moment the pointer leaves the viewport.
 
 What makes those points cheap to use is `resample_polyline_by_arclength`:
 asked for exactly as many points as it was given, it returns them untouched. So
@@ -1169,8 +1223,9 @@ hole** (outer loop only, panel warns), **Quad Fill** with configurable loop
 cuts, **N-Side** with per-side spans and manual corner placement, quad-family
 (solving a chain of connected quads in one click).
 
-Known rough edge: matching one side of a **multi-side ring** sets the whole
-"around" count from that side alone, since `span_key_for` maps every side of a
-ring to `span_u`. Correct for the common case (a rim is one cornerless side),
-wrong when a ring's loop has several sides — it wants the allocation logic
+Known rough edge: matching one side of a **multi-side ring** sets that loop's
+whole "around" count from that side alone — `span_key_for` now keys a ring per
+*loop* (so its two rims no longer knock each other out), but not per side.
+Correct for the common case, where a rim is one cornerless side; wrong when a
+ring's loop has several, and it wants the allocation logic
 `ring.allocate_segments` already has, threaded back through the match.

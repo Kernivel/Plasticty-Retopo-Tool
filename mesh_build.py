@@ -1421,8 +1421,15 @@ def update_preview_object(
         source_vid_attr = mesh.attributes.new(SOURCE_VID_ATTR, 'INT', 'POINT')
     values = [NO_SOURCE] * len(mesh.vertices)
     if corner_source_ids:
+        # A negative local index is a corner the generator could not place --
+        # a ring's phased rim, whose points land nowhere near the source vertex
+        # its loop started at. It is emitted rather than dropped so this zip
+        # stays aligned (the outer loop's ids come first); the vertex simply
+        # keeps NO_SOURCE and welds by proximity, like every other boundary
+        # point that moved.
         for local_idx, source_idx in zip(result.corner_local_indices, corner_source_ids):
-            values[local_idx] = source_idx
+            if local_idx >= 0:
+                values[local_idx] = source_idx
     source_vid_attr.data.foreach_set("value", values)
 
     boundary_attr = mesh.attributes.get(BOUNDARY_ATTR)

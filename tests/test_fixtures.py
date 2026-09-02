@@ -98,7 +98,7 @@ RESOLUTION = 'MID'
 EXPECTED = {
     "Carved Rounded Slot": dict(
         source_tris=156, patches=11,
-        result_verts=202, result_faces=131,
+        result_verts=172, result_faces=131,
         faces=[
             (69564, "Quad", 4, 1),
             (69565, "Quad", 4, 1),
@@ -112,8 +112,8 @@ EXPECTED = {
             (69583, "Quad", 4, 1),
             (69604, "Quad", 4, 1),
         ],
-        max_deviation_pct=0.36,  # measured 0.2761%
-        open_edges=150,
+        max_deviation_pct=0.09,  # measured 0.0690%
+        open_edges=90,
     ),
     "Cone": dict(
         source_tris=188, patches=2,
@@ -161,14 +161,14 @@ EXPECTED = {
     ),
     "Cylinder": dict(
         source_tris=320, patches=3,
-        result_verts=1652, result_faces=1590,
+        result_verts=1592, result_faces=1590,
         faces=[
             (68087, "Quad", 4, 1),
             (68088, "Quad", 4, 1),
             (68091, "Ring", 2, 2),
         ],
-        max_deviation_pct=0.08,  # measured 0.0608%
-        open_edges=120,
+        max_deviation_pct=0.079,  # measured 0.0602%
+        open_edges=0,
     ),
     "Flat Loop": dict(
         source_tris=622, patches=4,
@@ -206,7 +206,7 @@ EXPECTED = {
     ),
     "Plate": dict(
         source_tris=622, patches=5,
-        result_verts=833, result_faces=657,
+        result_verts=775, result_faces=657,
         faces=[
             (68118, "Quad", 4, 1),
             (68119, "Ring", 2, 2),
@@ -215,11 +215,11 @@ EXPECTED = {
             (68127, "Ring", 2, 2),
         ],
         max_deviation_pct=0.11,  # measured 0.0770%
-        open_edges=348,
+        open_edges=232,
     ),
     "Plate And Cylinder": dict(
         source_tris=2803, patches=14,
-        result_verts=2359, result_faces=2139,
+        result_verts=2229, result_faces=2139,
         faces=[
             (69329, "Ring", 2, 2),
             (69330, "Quad", 4, 1),
@@ -237,7 +237,7 @@ EXPECTED = {
             (69432, "Ring", 2, 2),
         ],
         max_deviation_pct=0.19,  # measured 0.1399%
-        open_edges=464,
+        open_edges=184,
     ),
     "Shape with holes": dict(
         source_tris=616, patches=17,

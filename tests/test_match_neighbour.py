@@ -150,6 +150,43 @@ check("after matching, the grid lands on the neighbour's own vertices",
       shared_boundary_xs(preview) == committed_xs,
       f"{shared_boundary_xs(preview)} vs {committed_xs}")
 
+# ===========================================================================
+# Saying which sides are actually being matched
+#
+# "Could be matched" and "is being matched" are different answers, and the
+# viewport used to give only the first: a side that had lost a span collision,
+# or whose span the user had typed since, drew the same green as one the
+# preview was genuinely welding to. That is most of why the feature read as
+# arbitrary, so the state is now recorded per side and the colour follows it.
+# ===========================================================================
+references = pr.sidematch.active_sides()
+matched = [r for r in references if r.applied]
+check("exactly the pinned side reports itself as matched",
+      [r.index for r in matched] == [shared.index], [r.index for r in matched])
+
+title, detail = pr.sidematch.status_of(matched[0], pr.sidematch.PIN_NEIGHBOUR)
+check("and says so in words", title == "Selected for surface matching", title)
+check("naming the patch it reproduces", "patch" in detail, detail)
+
+idle = next(r for r in references if not r.applied and not r.available)
+idle_title, idle_detail = pr.sidematch.status_of(idle, None)
+check("a side with nothing to match says it is not selected",
+      idle_title == "Not selected for surface matching", idle_title)
+check("and gives the reason, not just the refusal",
+      idle_detail == idle.reason and idle_detail != "", idle_detail)
+
+# The colour is what the user actually reads, so pin the mapping rather than
+# only the flags: green is reserved for a side being reproduced.
+matched_color, matched_width = pr.overlay._side_appearance(
+    matched[0], pr.sidematch.PIN_NEIGHBOUR, False)
+idle_color, _idle_width = pr.overlay._side_appearance(idle, None, False)
+check("a matched side is drawn in the matched colour",
+      matched_color == pr.overlay.SIDE_MATCHED_COLOR, matched_color)
+check("a side that is not being matched is not drawn green",
+      idle_color != pr.overlay.SIDE_MATCHED_COLOR, idle_color)
+check("and the matched one is drawn heavier",
+      matched_width > pr.overlay.SIDE_WIDTH, matched_width)
+
 lonely = next(r.index for r in references if not r.available)
 check("a side with no committed neighbour cannot be pinned to one",
       pr.operators.adopt_side_reference(

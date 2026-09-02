@@ -159,8 +159,9 @@ overlay.disable()
 # backend ignores whenever program point size is on -- the shader has to write
 # gl_PointSize then, and the builtin UNIFORM_COLOR one does not. The result was
 # 1px dots that ignored the size setting completely. They are screen-space
-# quads now, so the pixels asked for are the pixels drawn, and that is a pure
-# function this can check exactly.
+# discs now (round, because a square dot reads as a handle you can grab), so
+# the pixels asked for are the pixels drawn, and that is a pure function this
+# can check exactly.
 # ===========================================================================
 source = open(os.path.join(_ADDON_DIR, "overlay.py"), encoding="utf-8").read()
 # The *call*, not the word: the comment above the constants explains why it is
@@ -168,31 +169,37 @@ source = open(os.path.join(_ADDON_DIR, "overlay.py"), encoding="utf-8").read()
 check("nothing calls GL point size any more",
       "point_size_set(" not in source)
 
-vertices, indices = overlay._quads_around([(100.0, 200.0)], 5.0)
-check("one dot is four vertices", len(vertices) == 4, len(vertices))
-check("and two triangles", len(indices) == 2, indices)
+SEGMENTS = overlay.DOT_SEGMENTS
+vertices, indices = overlay._discs_around([(100.0, 200.0)], 5.0)
+check("one dot is a centre plus its rim", len(vertices) == SEGMENTS + 1,
+      len(vertices))
+check("and one triangle per segment", len(indices) == SEGMENTS, len(indices))
+check("the fan closes -- no gap where it wraps",
+      indices[-1][2] == indices[0][1], indices[-1])
+check("the segment count keeps the disc measurable", SEGMENTS % 4 == 0, SEGMENTS)
 check("indices stay inside the vertices they were built with",
       all(0 <= i < len(vertices) for tri in indices for i in tri), indices)
 
 xs = [v[0] for v in vertices]
 ys = [v[1] for v in vertices]
-check("the quad is 2*half wide -- the size setting reaches the geometry",
+check("the disc is 2*half wide -- the size setting reaches the geometry",
       abs((max(xs) - min(xs)) - 10.0) < 1e-6, max(xs) - min(xs))
 check("and 2*half tall", abs((max(ys) - min(ys)) - 10.0) < 1e-6, max(ys) - min(ys))
 check("centred on the point it marks",
       abs((max(xs) + min(xs)) / 2 - 100.0) < 1e-6
       and abs((max(ys) + min(ys)) / 2 - 200.0) < 1e-6, (xs, ys))
 
-wide, _ = overlay._quads_around([(0.0, 0.0)], 10.0)
-narrow, _ = overlay._quads_around([(0.0, 0.0)], 5.0)
-check("doubling the size doubles the square -- the bug was that it did not",
+wide, _ = overlay._discs_around([(0.0, 0.0)], 10.0)
+narrow, _ = overlay._discs_around([(0.0, 0.0)], 5.0)
+check("doubling the size doubles the disc -- the bug was that it did not",
       (max(v[0] for v in wide) - min(v[0] for v in wide))
       == 2 * (max(v[0] for v in narrow) - min(v[0] for v in narrow)))
 
-many_v, many_i = overlay._quads_around([(0.0, 0.0), (50.0, 0.0), (0.0, 50.0)], 3.0)
-check("every dot gets its own quad", len(many_v) == 12 and len(many_i) == 6,
+many_v, many_i = overlay._discs_around([(0.0, 0.0), (50.0, 0.0), (0.0, 50.0)], 3.0)
+check("every dot gets its own fan",
+      len(many_v) == 3 * (SEGMENTS + 1) and len(many_i) == 3 * SEGMENTS,
       f"{len(many_v)} verts, {len(many_i)} tris")
-check("nothing at all is still nothing", overlay._quads_around([], 5.0) == ([], []))
+check("nothing at all is still nothing", overlay._discs_around([], 5.0) == ([], []))
 
 # And the draw path itself, in the states it is reached from.
 state.session_active = True

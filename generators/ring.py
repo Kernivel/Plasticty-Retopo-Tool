@@ -117,6 +117,11 @@ def ring_from_sides(
 # perimeters are. Both limits are deliberately generous: a band whose hole is a
 # different shape from its outer boundary is still a band, and the cost of
 # calling one a plate is worse than the cost of the reverse.
+# "This corner has no vertex": emitted for a phased rim, whose points land
+# nowhere near the source vertex the loop started at. `mesh_build` skips a
+# negative local index rather than stamping an id onto a point that moved.
+NO_CORNER = -1
+
 BAND_GAP_SPREAD = 4.0       # widest gap over narrowest, sampled around the loop
 BAND_PERIMETER_RATIO = 6.0  # outer perimeter over inner
 
@@ -157,6 +162,18 @@ def is_band(loops: list[Loop]) -> bool:
     if inner <= 1e-12:
         return False
     return max(outer, inner) <= min(outer, inner) * BAND_PERIMETER_RATIO
+
+
+def loop_point_count(sides: list[list[mathutils.Vector]]) -> int:
+    """How many distinct points a loop's sides already hold.
+
+    Each side repeats its neighbour's first point, so a side of k+1 points
+    contributes k -- the same arithmetic `ring_from_sides` does when it drops
+    every side's last point. This is what a *matched* loop's count has to be:
+    its points are a committed neighbour's own vertices, and resampling them to
+    any other number would move them off it.
+    """
+    return sum(max(1, len(side) - 1) for side in sides)
 
 
 def around_count(loops: list[Loop], span_u: int) -> int:
@@ -388,33 +405,77 @@ class RingGenerator(Generator):
         if len(loops) != 2:
             raise ValueError("RingGenerator expects exactly two boundary loops")
 
-        outer_sides, inner_sides = loops[0], loops[1]
         across = max(1, int(span_settings.get("span_v", 1)))
-        around = around_count(loops, span_settings.get("span_u", 1))
 
-        outer, outer_corners, outer_alloc = ring_from_sides(outer_sides, around)
-        n = len(outer)
+        # A *locked* loop carries a committed neighbour's own vertices, put
+        # there by the side matching. It is the fixed thing in the band: its
+        # points have to come out exactly as they went in, and the other loop
+        # is what gets aligned onto them. Before this, the band was always led
+        # by loops[0] and the other rim was phase-*resampled* onto it -- so a
+        # match landing on that other rim was thrown away and the two rims came
+        # back half a step apart. Which rim is which is decided by extent
+        # (`sort_loops_outer_first`), and on a tube the two are equal, so the
+        # same match worked or didn't depending on nothing the user can see.
+        locked = {index for index in span_settings.get("locked_loops", ()) or ()
+                  if index in (0, 1)}
+        around = around_count(loops, span_settings.get("span_u", 1))
+        for index in sorted(locked):
+            # At most one count can be honoured, and `sidematch._honours` has
+            # already dropped any match that disagrees with the resolved span.
+            around = max(loop_point_count(loops[index]),
+                         len(loops[0]), len(loops[1]), 3)
+            break
+
+        # Which loop leads: the locked one, else the outer -- which is what it
+        # always was.
+        lead_index = 1 if (1 in locked and 0 not in locked) else 0
+        free_index = 1 - lead_index
+        lead_sides, free_sides = loops[lead_index], loops[free_index]
+
+        lead, lead_corners, lead_alloc = ring_from_sides(lead_sides, around)
+        n = len(lead)
         if n < 3:
             raise ValueError("Ring patch boundary is degenerate")
 
-        # A hole with corners of its own has to keep them: they are untouched
+        # A rim with corners of its own has to keep them: they are untouched
         # source vertices, welded to neighbouring patches by identity. A
-        # cornerless rim has no such name -- its start is wherever the
+        # cornerless one has no such name -- its start is wherever the
         # half-edge walk began -- so it is free to be sampled from wherever
         # makes the rungs run straight across. See the note above phase_align.
-        inner_cornerless = len(inner_sides) == 1
-        phased = (phase_align(outer, closed_points(inner_sides[0]), n)
-                  if inner_cornerless else [])
+        # A locked rim is never phased either, for a different reason: its
+        # points are not a sample of a boundary at all, they are a neighbour's
+        # vertices.
+        free_cornerless = len(free_sides) == 1 and free_index not in locked
+        phased = (phase_align(lead, closed_points(free_sides[0]), n)
+                  if free_cornerless else [])
 
         if phased:
-            inner = phased
-            inner_corners, inner_alloc = [0], [n]
-            inner_position_of = {i: i for i in range(n)}
+            free = phased
+            free_corners, free_alloc = [0], [n]
+            free_position_of = {i: i for i in range(n)}
         else:
-            inner, inner_corners, inner_alloc = ring_from_sides(inner_sides, around)
-            if len(inner) != n:
+            free, free_corners, free_alloc = ring_from_sides(free_sides, around)
+            if len(free) != n:
                 raise ValueError("Ring patch boundary is degenerate")
-            inner, inner_position_of = align_rings(outer, inner)
+            free, free_position_of = align_rings(lead, free)
+
+        # `align_rings` re-indexes the free loop, so its corners have to be
+        # looked up through the map it returns -- the lead loop is untouched
+        # and maps to itself. Getting this wrong stamps a loop's corner ids
+        # onto whichever vertices happen to sit at those positions, and a
+        # corner welds by *identity*: the neighbouring patches then weld to
+        # points on the far side of the band.
+        lead_position_of = {i: i for i in range(n)}
+        if lead_index == 0:
+            outer, outer_corners, outer_alloc = lead, lead_corners, lead_alloc
+            inner, inner_corners, inner_alloc = free, free_corners, free_alloc
+            outer_position_of, inner_position_of = lead_position_of, free_position_of
+            outer_phased, inner_phased = False, bool(phased)
+        else:
+            outer, outer_corners, outer_alloc = free, free_corners, free_alloc
+            inner, inner_corners, inner_alloc = lead, lead_corners, lead_alloc
+            outer_position_of, inner_position_of = free_position_of, lead_position_of
+            outer_phased, inner_phased = bool(phased), False
 
         verts = []
         uvs = []
@@ -432,7 +493,9 @@ class RingGenerator(Generator):
             # They are not shared with anything either (their corner id was
             # dropped for the same reason), so they get the same reprojection
             # the interior does.
-            reproject = 0 < r < across or (phased and r == across)
+            reproject = (0 < r < across
+                         or (inner_phased and r == across)
+                         or (outer_phased and r == 0))
             for i in range(n):
                 point = outer[i].lerp(inner[i], t)
                 if reproject and bvh is not None:
@@ -456,17 +519,19 @@ class RingGenerator(Generator):
 
         # Corners first of the outer loop then of the hole, matching the order
         # operators._prepare_patch collects their source vertex ids in.
-        corner_local_indices = [index_of(0, c) for c in outer_corners]
-        if not phased:
-            corner_local_indices += [index_of(across, inner_position_of[c])
-                                     for c in inner_corners]
         # A phased rim's points sit wherever the alignment put them, so none of
-        # them *is* the source vertex the loop started at. The list is simply
-        # left short: the caller zips it against corner_source_ids, so the
-        # hole's id is dropped rather than stamped onto a point that moved --
-        # which would make a later patch weld to a vertex that isn't there.
-        # It welds by proximity like every other boundary point instead.
-
+        # them *is* the source vertex its loop started at. Its corner is
+        # emitted as NO_CORNER rather than dropped: the caller zips this list
+        # against corner_source_ids positionally, and the outer loop's ids come
+        # first, so shortening the outer half would stamp an outer id onto the
+        # hole's vertex. A point with no id welds by proximity like every other
+        # boundary point, which is what a moved one should do.
+        corner_local_indices = [
+            NO_CORNER if outer_phased else index_of(0, outer_position_of[c])
+            for c in outer_corners]
+        corner_local_indices += [
+            NO_CORNER if inner_phased else index_of(across, inner_position_of[c])
+            for c in inner_corners]
         boundary_local_indices = [index_of(0, i) for i in range(n)]
         boundary_local_indices += [index_of(across, i) for i in range(n)]
 

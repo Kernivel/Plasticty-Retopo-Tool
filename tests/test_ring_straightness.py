@@ -143,13 +143,17 @@ check("a hole wound the other way is straight too",
 # What the fix is not allowed to cost
 # ---------------------------------------------------------------------------
 # A phased rim is sampled from wherever the alignment put it, so index 0 is no
-# longer the source vertex the loop was walked from. Its corner id must be
-# dropped, not stamped onto a point that moved -- the caller zips the two
-# lists, so a short list is how the hole's id gets left out.
-check("a phased rim gives up the outer corner only",
-      len(result.corner_local_indices) == 1, result.corner_local_indices)
-check("and that one is still on the outer row",
-      result.corner_local_indices[0] < around, result.corner_local_indices)
+# longer the source vertex the loop was walked from. Its corner id must not be
+# stamped onto a point that moved -- so the generator emits NO_CORNER for it.
+# In place rather than by shortening the list: the caller zips this against
+# corner_source_ids and the outer loop's ids come first, so a short list stamps
+# an outer id onto the hole's vertex the moment it is the *outer* rim that got
+# phased (which is what happens once the hole is the one carrying a match).
+check("a phased rim gives up its corner",
+      result.corner_local_indices == [0, ring.NO_CORNER],
+      result.corner_local_indices)
+check("and the rim that kept its own is still on the outer row",
+      0 <= result.corner_local_indices[0] < around, result.corner_local_indices)
 
 # A hole with real corners is a different matter: those are B-rep vertices,
 # welded to neighbours by identity, so it must NOT be phased however skewed
