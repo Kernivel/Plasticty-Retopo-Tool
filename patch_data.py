@@ -169,6 +169,35 @@ def weld_candidates(mesh: "bpy.types.Mesh") -> Sequence[int] | None:
     return np.flatnonzero(on_free_edge)
 
 
+def shortest_edge(mesh: "bpy.types.Mesh") -> float:
+    """The shortest non-degenerate edge of `mesh`, or infinity if it has none.
+
+    What the weld may not reach across. Computed with `foreach_get` plus a
+    numpy reduction where numpy is there, since it runs on every parse and the
+    Python version is one interpreted iteration per edge; without numpy the
+    answer is infinity, which is the previous behaviour exactly -- an uncapped
+    epsilon, only correct on a part whose features are all larger than it.
+    """
+    n_edges = len(mesh.edges)
+    n_verts = len(mesh.vertices)
+    if not n_edges or not n_verts:
+        return float("inf")
+    try:
+        import numpy as np
+    except ImportError:
+        return float("inf")
+
+    coords = np.empty(n_verts * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", coords)
+    edges = np.empty(n_edges * 2, dtype=np.int32)
+    mesh.edges.foreach_get("vertices", edges)
+
+    pairs = coords.reshape(-1, 3)[edges.reshape(-1, 2)]
+    lengths = np.linalg.norm(pairs[:, 0] - pairs[:, 1], axis=1)
+    real = lengths[lengths > 0.0]
+    return float(real.min()) if real.size else float("inf")
+
+
 def build_weld_map(mesh: "bpy.types.Mesh", epsilon: float = 1e-5) -> list[int]:
     """Return a list mapping raw vertex index -> canonical "welded" vertex
     index, merging vertices within `epsilon` of each other.
@@ -187,6 +216,29 @@ def build_weld_map(mesh: "bpy.types.Mesh", epsilon: float = 1e-5) -> list[int]:
     tessellated fillet. When nothing can be excluded the whole mesh goes in,
     which is the previous behaviour exactly.
 
+    **The epsilon is capped by the mesh's own shortest edge, and that cap is
+    not a refinement.** An edge is the mesh saying outright that its two ends
+    are distinct points of the surface; welding across one destroys it. The
+    triangle carrying it goes degenerate, its two directed corners are dropped
+    as `a == b`, and the patch's directed boundary -- balanced by construction,
+    one outgoing and one incoming per polygon corner -- stops being balanced.
+    `compute_boundary_loops` then walks into a dead end, hands back an *open
+    chain* as if it were a loop, and every reader closes it with `% n`: a chord
+    from its last vertex straight back to its first, drawn across a face the
+    model never divided, with the patch reporting five or seven boundary loops
+    where it has one. A part whose smallest features sit at the epsilon
+    triggers that readily -- on one, 205 real edges were collapsed in a single
+    object and 101 of its 245 loops came back open.
+
+    Capping rather than testing adjacency pair by pair, because the pairwise
+    test cannot answer this: when two genuinely distinct positions both fall
+    inside the epsilon, the cluster has to be *split* by position, and which
+    copy is edge-joined to which is an accident of how the bridge happened to
+    emit the triangles. Half the shortest edge is the largest radius at which
+    no cluster can span two of them. The copies this exists to merge are
+    unaffected: they are the same double rounded the same way twice, so they
+    sit at a distance of zero, not of the epsilon.
+
     `epsilon` is absolute, in the mesh's own local units. See the note in
     CLAUDE.md: on a part far from the origin it is close enough to the float32
     ulp that two faces' copies of a shared vertex can fail to meet.
@@ -199,6 +251,10 @@ def build_weld_map(mesh: "bpy.types.Mesh", epsilon: float = 1e-5) -> list[int]:
     candidates = weld_candidates(mesh)
     considered = range(n) if candidates is None else candidates
     if len(considered) < 2:
+        return weld_id
+
+    epsilon = min(epsilon, shortest_edge(mesh) * 0.5)
+    if epsilon <= 0.0:
         return weld_id
 
     coords = mesh.vertices
@@ -313,28 +369,48 @@ def compute_boundary_loops(
     # reverse (b, a) is not also emitted by another polygon of this same
     # patch (that would mean it's shared internally, i.e. both sides belong
     # to the patch and cancel out).
-    boundary_half_edges = {}
+    # One vertex can carry more than one outgoing boundary half-edge -- a
+    # boundary that touches itself at a point -- so this is a multimap. Keyed
+    # by a single target, the second half-edge was dropped and the walk that
+    # needed it died.
+    outgoing: dict[int, list[int]] = {}
     for (a, b) in directed_present:
         if (b, a) not in directed_present:
-            boundary_half_edges[a] = b
+            outgoing.setdefault(a, []).append(b)
 
     # Walk the half-edges into closed loops.
+    #
+    # A patch's directed boundary is balanced -- each polygon contributes one
+    # outgoing and one incoming at every corner, and cancelling a pair removes
+    # one of each at both ends -- so it decomposes into closed cycles and every
+    # walk returns to where it started. A chain that does *not* is the mesh
+    # telling us something is wrong with it, and it must not be handed back as
+    # a loop: every reader closes a loop with `% n`, so an open chain draws a
+    # chord from its last vertex to its first, straight across a face the model
+    # never divided, and counts as an extra boundary loop besides. Dropping the
+    # fragment loses part of one patch's border; keeping it invents geometry
+    # across the whole part. The usual cause was the weld collapsing a real
+    # edge, which `build_weld_map` no longer does.
     loops = []
-    remaining = dict(boundary_half_edges)
-    while remaining:
-        start = next(iter(remaining))
+    while outgoing:
+        start = next(iter(outgoing))
         loop = [start]
         current = start
+        closed = False
         while True:
-            nxt = remaining.pop(current, None)
-            if nxt is None:
-                # open chain (shouldn't happen on a closed patch boundary) - stop
+            targets = outgoing.get(current)
+            if not targets:
                 break
+            nxt = targets.pop()
+            if not targets:
+                del outgoing[current]
             if nxt == start:
+                closed = True
                 break
             loop.append(nxt)
             current = nxt
-        loops.append(loop)
+        if closed:
+            loops.append(loop)
 
     patch.boundary_loops = loops
     patch.boundary_neighbours = (
@@ -343,6 +419,163 @@ def compute_boundary_loops(
         if directed_owners is not None else []
     )
     return loops
+
+
+# How far a boundary segment may sit off a foreign one before the two stop
+# being the same CAD edge, as a share of the whole mesh's extent.
+#
+# Of the *extent*, not of the segment's own length, and that is the whole of
+# it. Two faces sharing a CAD edge put their boundaries on the same curve, so
+# the only thing between their chords is float rounding, which scales with
+# coordinate magnitude and not with feature size. Measured across four objects
+# of a real part, a genuine shared border sits within 1e-7 of the extent at the
+# 95th percentile -- coincident, in other words. Scaling by the segment instead
+# lets a long one reach a long way *sideways*, which answers a different
+# question: a separate sheet 0.02 above a 4-unit edge is 0.5% of that edge and
+# would be taken as its neighbour (tests/test_match_specificity.py builds
+# exactly that stack-up). At a share of the extent it is 4e-3, four hundred
+# times outside this limit, while every real border is two orders inside it.
+NEIGHBOUR_GAP_RATIO = 1e-5
+# How many sample points the boundary index may hold. Segments are sampled at
+# one *uniform* spacing rather than a few points each, so that the query radius
+# is a constant and every lookup returns a handful of hits instead of however
+# many happen to lie within a multiple of the segment's own length. That
+# distinction is the difference between 8 seconds and a tenth of one on a
+# 35k-polygon object: a long straight edge searched at four times its own
+# length swept a large part of the mesh, once per orphan.
+NEIGHBOUR_INDEX_POINTS = 400_000
+
+
+def _point_segment_distance(
+    point: "mathutils.Vector", a: "mathutils.Vector", b: "mathutils.Vector"
+) -> float:
+    direction = b - a
+    length_squared = direction.length_squared
+    if length_squared <= 0.0:
+        return (point - a).length
+    t = max(0.0, min(1.0, (point - a).dot(direction) / length_squared))
+    return (point - (a + direction * t)).length
+
+
+def resolve_neighbours_by_geometry(
+    patches: dict[int, Patch], positions: Positions
+) -> int:
+    """Name the face across every boundary segment the half-edge pairing missed.
+
+    `boundary_neighbours_for_loop` finds the neighbour by looking for the same
+    edge walked the other way, which is exact and free -- and which requires
+    the two faces to have put the *same vertices* on the CAD edge they share.
+    Plasticity tessellates each face on its own, and on a real part it does not
+    always agree with itself: the finer side drops vertices in the middle of
+    the coarser side's segments, so the reversed half-edge is not there and the
+    segment reports no neighbour at all.
+
+    That reads downstream as an open boundary, and an open boundary is not a
+    quiet degradation. `detect_topological_corners` fires wherever the
+    neighbour changes, so every one of those segments becomes a phantom B-rep
+    vertex; the side count is what picks the generator, so the patch is filled
+    by the wrong one; and `cad_display` draws the shared border as a string of
+    unrelated edges. Measured on one CAD part, 2327 of 4857 boundary segments
+    of a single object -- half of them -- came back unmatched this way.
+
+    So the pairing falls back to geometry for exactly those: the neighbour is
+    the patch whose own boundary segment this one *lies along*. Nothing here
+    touches a segment that already found its opposite, and nothing is built at
+    all when none of them missed -- a cleanly tessellated mesh pays only the
+    scan that finds nothing to do.
+
+    Mutates `boundary_neighbours` in place and returns how many it filled in.
+    A segment with genuinely nothing across it (a real open boundary) is left
+    alone, which is the honest answer rather than the nearest one.
+    """
+    from mathutils.kdtree import KDTree
+
+    if not positions:
+        return 0
+    if not any(neighbour is None
+               for patch in patches.values()
+               for neighbours in patch.boundary_neighbours
+               for neighbour in neighbours):
+        return 0
+
+    # (owner, a, b) for every boundary segment of every patch.
+    segments: list[tuple[int, "mathutils.Vector", "mathutils.Vector"]] = []
+    for owner, patch in patches.items():
+        for loop in patch.boundary_loops:
+            count = len(loop)
+            for i in range(count):
+                a = positions[loop[i]]
+                b = positions[loop[(i + 1) % count]]
+                if (b - a).length_squared > 0.0:
+                    segments.append((owner, a, b))
+    if not segments:
+        return 0
+
+    points = positions.values()
+    low = [min(p[axis] for p in points) for axis in range(3)]
+    high = [max(p[axis] for p in points) for axis in range(3)]
+    extent = sum((high[axis] - low[axis]) ** 2 for axis in range(3)) ** 0.5
+    limit = extent * NEIGHBOUR_GAP_RATIO
+    if limit <= 0.0:
+        return 0
+
+    # Sample every segment at one spacing, so the index resolves the boundary
+    # evenly however coarsely any single face was tessellated. The median
+    # segment is the natural choice -- it is what the mesher itself settled on
+    # -- floored so a part with a few very long edges cannot blow the index up.
+    lengths = sorted((b - a).length for _owner, a, b in segments)
+    total_length = sum(lengths)
+    spacing = max(lengths[len(lengths) // 2],
+                  total_length / NEIGHBOUR_INDEX_POINTS)
+    if spacing <= 0.0:
+        return 0
+
+    samples = []
+    for index, (_owner, a, b) in enumerate(segments):
+        direction = b - a
+        steps = max(1, int(direction.length / spacing) + 1)
+        for step in range(steps + 1):
+            samples.append((a + direction * (step / steps), index))
+
+    tree = KDTree(len(samples))
+    for point, index in samples:
+        tree.insert(point, index)
+    tree.balance()
+
+    # A midpoint lying on a foreign segment is within `limit` of it, and the
+    # nearest sample on that segment is at most half a spacing further along.
+    reach = spacing * 0.5 + limit
+
+    resolved = 0
+    for owner, patch in patches.items():
+        for loop, neighbours in zip(patch.boundary_loops, patch.boundary_neighbours):
+            count = len(loop)
+            for i, neighbour in enumerate(neighbours):
+                if neighbour is not NO_NEIGHBOUR:
+                    continue
+                a = positions[loop[i]]
+                b = positions[loop[(i + 1) % count]]
+                if (b - a).length_squared <= 0.0:
+                    continue
+                midpoint = (a + b) * 0.5
+                best_gap = limit
+                best_owner = NO_NEIGHBOUR
+                seen = set()
+                for _co, index, _dist in tree.find_range(midpoint, reach):
+                    if index in seen:
+                        continue
+                    seen.add(index)
+                    other, other_a, other_b = segments[index]
+                    if other == owner:
+                        continue
+                    gap = _point_segment_distance(midpoint, other_a, other_b)
+                    if gap <= best_gap:
+                        best_gap = gap
+                        best_owner = other
+                if best_owner is not NO_NEIGHBOUR:
+                    neighbours[i] = best_owner
+                    resolved += 1
+    return resolved
 
 
 def loop_extent(loop: Loop, positions: Positions) -> float:
@@ -442,13 +675,18 @@ def analyse(mesh: "bpy.types.Mesh", weld_epsilon: float = 1e-5) -> MeshPatches:
     for patch in patches.values():
         compute_boundary_loops(mesh, patch, face_id_of_poly, weld_map, directed_owners)
 
+    positions = {v.index: v.co.copy() for v in mesh.vertices}
+    # Only after every patch has its loops: the fallback pairs a segment with
+    # another patch's segment, so it needs all of them to exist first.
+    resolve_neighbours_by_geometry(patches, positions)
+
     analysis = MeshPatches(
         patches=patches,
         face_id_of_poly=face_id_of_poly,
         face_ids=face_ids,
         weld_map=weld_map,
         directed_owners=directed_owners,
-        positions={v.index: v.co.copy() for v in mesh.vertices},
+        positions=positions,
     )
 
     if len(_cache) >= _CACHE_LIMIT:

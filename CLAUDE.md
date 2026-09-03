@@ -17,12 +17,17 @@ python scripts/deploy.py --list      # show detected Blender config dirs
 blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/benchmark.py
 blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/benchmark.py -- --resolution HIGH --object Cylinder
 
+# why a recovered boundary disagrees with the CAD face Plasticity draws:
+# missed welds, tessellations that don't pair, pinched loops
+blender YourFile.blend --background --factory-startup --python scripts/diagnose_edges.py
+blender YourFile.blend --background --factory-startup --python scripts/diagnose_edges.py -- --object Body --face 1234
+
 # regenerate the two documents derived from that fixture
 blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/gen_results.py       # RESULTS.md
 blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/gen_expectations.py  # the EXPECTED table
 ```
 
-**`--factory-startup` is not optional on those four**, however harmless a
+**`--factory-startup` is not optional on those five**, however harmless a
 read-only script looks: run without it and every installed addon loads too, and
 one of them *saved the fixture over itself* on quit (it left a `.blend1` beside
 it, which is the tell). The file is frozen — `git status` after any run against
@@ -96,6 +101,23 @@ B-rep vertex — the junction between two CAD edges. That is what
 `patch_data.build_directed_owners` / `boundary_neighbours_for_loop` recover,
 and what the topological corner detector runs on.
 
+**But the two faces meeting along a CAD edge do not always tessellate it the
+same way**, and that pairing needs them to. On a real part the finer side drops
+vertices in the *middle* of the coarser side's boundary segments -- a T-junction
+along the border -- so the reversed half-edge simply is not there and the
+segment reports no neighbour at all. It is not a rare case: on one exported
+object, 2327 of 4857 boundary segments came back unmatched this way, and on the
+whole file 1312 of 2287 faces had at least one. Downstream that is *not* a quiet
+degradation. `detect_topological_corners` fires wherever the neighbour changes,
+so every such segment becomes a phantom B-rep vertex; the side count picks the
+generator, so the patch is filled by the wrong one; and `cad_display` draws one
+shared border as a string of unrelated edges. That is the reported symptom
+"Blender's patch doesn't match Plasticity's face".
+`patch_data.resolve_neighbours_by_geometry` is the fallback, and its shape is
+the point: it runs **only** on segments the exact pairing missed, so a cleanly
+tessellated mesh pays one scan that finds nothing. See the invariant below for
+why its tolerance is a share of the *model extent*.
+
 **The bridge tessellates each face separately, so patch borders are
 duplicated.** The two faces meeting along a B-rep edge each carry their own
 copy of every vertex on it, at the same position under different indices. Any
@@ -120,6 +142,44 @@ that end, `tests/test_weld_scope.py` the other).
 The one behaviour genuinely given up: an interior vertex coincident with
 something is no longer merged. That is a T-junction, which a B-rep kernel does
 not emit, and merging it never affected the loops anyway.
+
+**The weld may never reach across a real edge, so the epsilon is capped by the
+mesh's own shortest one** (`shortest_edge`, half of it). An edge is the mesh
+saying outright that its two ends are distinct points of the surface; welding
+across one destroys the triangle carrying it, whose two directed corners are
+then dropped as `a == b`. A patch's directed boundary is *balanced* by
+construction -- one outgoing and one incoming per polygon corner, and
+cancelling a pair removes one of each at both ends -- so it decomposes into
+closed cycles; drop one corner and it no longer does, the walk in
+`compute_boundary_loops` runs into a dead end, and what comes back is an **open
+chain handed out as a loop**. Every reader closes a loop with `% n`, so that
+chain draws a chord from its last vertex straight back to its first, across a
+face the model never divided, and counts as an extra boundary loop besides --
+which is what "there is an edge here that Plasticity doesn't have" looks like,
+and what made single faces report five and seven loops. On one real part 205
+real edges were collapsed in a single object and 101 of its 245 loops came back
+open. Capping rather than testing adjacency pair by pair: when two genuinely
+distinct positions both fall inside the epsilon the cluster has to be *split*
+by position, and which copy is edge-joined to which is an accident of how the
+bridge emitted the triangles. The copies this exists to merge are unaffected --
+they are the same double rounded the same way twice, so they sit at distance
+zero, not at the epsilon.
+
+On a real part the cap bites *hard*: one object's shortest edge is 2e-8, so the
+epsilon drops to 1e-8 and the weld becomes, in effect, exact-position merging.
+That is safe here for two reasons worth stating, because neither is obvious.
+`weld_candidates` already scopes the weld to border vertices, so a tighter
+epsilon cannot leave a face's own interior unwelded and turn its triangulation
+edges into boundaries. And a border that no longer pairs vertex for vertex is
+picked up by `resolve_neighbours_by_geometry` anyway -- which is why that
+fallback has to exist *before* this cap is safe to apply. Measured on that
+part, capping raises the unpaired segment count (2327 to 2570 on one object)
+and the fallback takes every one of them back to zero.
+
+And the walk itself now **returns only loops that closed**, over a multimap so
+a vertex with two outgoing boundary half-edges keeps both. A fragment that
+cannot close loses part of one patch's border; keeping it invents geometry
+across the whole part. `tests/test_boundary_walk.py`.
 
 The epsilon is `1e-5` **absolute, in the mesh's local units, and no caller
 overrides it**. On a part whose coordinates run to a few hundred units the
@@ -183,6 +243,28 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   `positions`, because a generator may hand its input straight through into a
   preview mesh (`resample_polyline_by_arclength` returns the very objects it was
   given when the count already matches).
+- **A neighbour missed by half-edge pairing is found by geometry, and the
+  tolerance is a share of the model extent.** `resolve_neighbours_by_geometry`
+  fills in a segment's neighbour with the patch whose own boundary segment this
+  one *lies along*. Of the **extent**, not of the segment's own length, and
+  that is the whole of it: two faces sharing a CAD edge put their boundaries on
+  the same curve, so the only thing between their chords is float rounding,
+  which scales with coordinate magnitude and not with feature size -- measured
+  across four objects of a real part, a genuine shared border sits within 1e-7
+  of the extent at the 95th percentile, i.e. coincident. Scaling by the segment
+  instead lets a long one reach a long way *sideways*: the separate sheet 0.02
+  above a 4-unit edge in `tests/test_match_specificity.py` is 0.5% of that edge
+  and was taken as its neighbour, while at a share of the extent it is 4e-3,
+  four hundred times outside the limit. The index samples every segment at one
+  **uniform** spacing (the median segment length) rather than a few points
+  each, so the query radius is a constant and each lookup returns a handful of
+  hits; indexing three points per segment and searching a multiple of the
+  segment's own length swept a large part of the mesh once per orphan, which
+  was 7.8 s on a 35k-polygon object against 0.12 s now -- and *less* accurate,
+  since a long neighbour kept no sample near a short segment.
+  `tests/test_tjunction.py` builds a border only half of which pairs, and
+  asserts both that the exact pass still fails on it -- or the test proves
+  nothing -- and that the two genuine B-rep vertices are all that survive.
 - **Welding across patches.** Only *corner* vertices are exact source-mesh
   vertices, so they're welded by identity (`retop_source_vid` attribute).
   Interior boundary points are span-dependent resamples: they're welded only
