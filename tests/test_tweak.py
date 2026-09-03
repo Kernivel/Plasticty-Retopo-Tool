@@ -151,6 +151,36 @@ check("the settings come back exactly", not tool_settings.use_snap
 check("and the snapshot is spent, not replayed later",
       state.tweak_saved_tool_settings == "")
 
+# ---------------------------------------------------------------------------
+# The retopology draws in front for the length of the trip -- and only that
+# ---------------------------------------------------------------------------
+# In Front is a draw flag, not a lift: nothing moves, so what is on screen is
+# still exactly where the topology is. That is the whole reason it is this and
+# not an offset, and it is why it can be on while the surface is not.
+state.result_see_through = False
+state.session_phase = 'PATCH'
+pr.mesh_build.refresh_result_appearance(bpy.context)
+check("outside a hand-edit the result is occluded like anything else",
+      not result.show_in_front)
+
+state.tweak_draw_in_front = True
+state.tweak_source_object = obj.name
+state.session_phase = 'TWEAK'
+pr.mesh_build.refresh_result_appearance(bpy.context)
+check("during one it draws over the surface", result.show_in_front)
+
+# A redraw triggered mid-edit by any other setting must agree with the trip
+# rather than undo it, which is what routing it through the same function buys.
+state.tweak_draw_in_front = False
+pr.mesh_build.refresh_result_appearance(bpy.context)
+check("...unless the preference says not to", not result.show_in_front)
+
+state.tweak_draw_in_front = True
+state.session_phase = 'PATCH'
+state.tweak_source_object = ""
+pr.mesh_build.refresh_result_appearance(bpy.context)
+check("and it goes back on the way out", not result.show_in_front)
+
 # Ending a session mid-trip must not leave them rewritten either.
 state.tweak_saved_tool_settings = json.dumps(before)
 tool_settings.use_snap = True

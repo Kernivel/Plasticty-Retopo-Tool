@@ -252,6 +252,15 @@ def enter_tweak(context: bpy.types.Context) -> str | None:
     state.tweak_saved_tool_settings = json.dumps(snapshot_tool_settings(context))
     apply_tool_settings(context, _wanted_settings(state))
 
+    # Draw the retopology over the CAD surface for the trip. Set here, on the
+    # object, rather than through refresh_result_appearance: that one also
+    # assigns materials, which writes to mesh data, and by the time this
+    # matters Blender owns the mesh in Edit Mode. `refresh_result_appearance`
+    # knows about the TWEAK phase too, so a redraw triggered mid-edit by some
+    # other setting agrees with this instead of undoing it.
+    if state.tweak_draw_in_front:
+        result.show_in_front = True
+
     try:
         bpy.ops.object.mode_set(mode='EDIT')
     except RuntimeError as exc:
@@ -322,4 +331,8 @@ def exit_tweak(context: bpy.types.Context) -> tuple[int, int]:
     # had entered one.
     state.session_phase = state.tweak_return_phase or 'PATCH'
     state.tweak_return_phase = ""
+    # Back in Object Mode, so this is free to touch materials again: it puts
+    # `show_in_front` back under `result_see_through`, where it belongs outside
+    # a hand-edit.
+    mesh_build.refresh_result_appearance(context)
     return repaired

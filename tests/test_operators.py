@@ -208,18 +208,28 @@ check("the preview knows which source object it belongs to",
       pr.mesh_build.preview_source_object() is obj,
       str(pr.mesh_build.preview_source_object()))
 
-state.preview_offset = 0.5
+# One offset drives both, so moving it moves the preview with the result --
+# there is no second slider that could disagree with it.
 mod = preview_obj.modifiers.get(pr.mesh_build.OFFSET_MODIFIER_NAME) if preview_obj else None
-check("Preview Offset adds on top of the shared lift",
-      mod is not None and abs(mod.strength - (base_lift + 0.5)) < 1e-6,
+check("the preview's lift is the result's, times the margin",
+      mod is not None and abs(mod.strength - base_lift) < 1e-6,
       f"mod={mod}, strength={mod.strength if mod else 'N/A'}, base={base_lift}")
 
-apex_local_before = preview_obj.data.vertices[-1].co.copy()  # base mesh, unaffected by the modifier
-state.preview_offset = 0.0
+# An explicit Result Offset, since the default 0 means "derive it from the
+# object's size" and doubling zero moves nothing.
+before_offset = state.result_offset
+state.result_offset = 1.0
+raised = (pr.mesh_build.result_lift(bpy.context, obj)
+          * pr.mesh_build.PREVIEW_LIFT_RATIO)
 mod_after = preview_obj.modifiers.get(pr.mesh_build.OFFSET_MODIFIER_NAME)
-check("with no extra offset the preview still keeps the result's lift",
-      mod_after is not None and abs(mod_after.strength - base_lift) < 1e-6,
-      f"strength={mod_after.strength if mod_after else 'N/A'}, base={base_lift}")
+check("and follows it when it changes",
+      mod_after is not None and abs(mod_after.strength - raised) < 1e-6
+      and abs(raised - base_lift) > 1e-9,
+      f"strength={mod_after.strength if mod_after else 'N/A'}, "
+      f"want={raised}, was={base_lift}")
+state.result_offset = before_offset
+
+apex_local_before = preview_obj.data.vertices[-1].co.copy()  # base mesh, unaffected by the modifier
 
 # --- Alt+X is one answer for both meshes: a preview drawn in front while the
 # result is being checked against the surface is the same confusion again. ---

@@ -28,7 +28,7 @@ into its mesh data -- so Commit (which reads the preview's base mesh, not
 its modifier-evaluated geometry) always bakes the true, un-offset position.
 
 Preview and result are lifted by the *same* measure (result_lift), the
-preview by a little more (PREVIEW_LIFT_RATIO). They are always seen
+preview by a little more (PREVIEW_LIFT_RATIO). One control, not two. They are always seen
 together -- side by side across a shared boundary, and stacked while a
 committed patch is hovered before the click that removes its faces -- so
 the preview sitting on the surface while the result floated above it read
@@ -1196,22 +1196,20 @@ def result_lift(
 def preview_lift(context: bpy.types.Context) -> float:
     """How far the *preview* is pushed off the surface.
 
-    The result offset times PREVIEW_LIFT_RATIO, plus whatever Preview Offset
-    adds on top. Strictly more than the result, never less: the patch being
-    built (or re-edited, where the hover draws it straight over the committed
-    faces before the click removes them) must read as the thing in front, and
-    two coplanar surfaces z-fight into a stipple that says nothing.
-    The margin is a fraction of an offset that is itself 0.1% of the model, so
-    the seam with a committed neighbour stays visually flush.
+    The result offset times PREVIEW_LIFT_RATIO, and nothing else. Strictly
+    more than the result, never less: the patch being built (or re-edited,
+    where the hover draws it straight over the committed faces before the click
+    removes them) must read as the thing in front, and two coplanar surfaces
+    z-fight into a stipple that says nothing. The margin is a fraction of an
+    offset that is itself 0.1% of the model, so the seam with a committed
+    neighbour stays visually flush.
+
+    There is **one** offset, not two. An Extra Offset slider sat beside this
+    for a while, in its own panel section, and it read as a second independent
+    setting -- which is precisely what it was not, since it was added to a
+    number this one already derives from. One distance, one control.
     """
-    state = context.scene.plasticity_retop
-    # Through to_blender_units, like every other distance in the panel -- and
-    # like the Result Offset this is added to. Without it the two sliders sat
-    # on scales a thousand apart in millimetres: one whole unit of Extra Offset
-    # was a metre, i.e. hundreds of times the offset it was meant to nudge, so
-    # the smallest usable drag threw the preview off the model entirely.
-    extra = state_mod.to_blender_units(state, state.preview_offset)
-    return result_lift(context, preview_source_object()) * PREVIEW_LIFT_RATIO + extra
+    return result_lift(context, preview_source_object()) * PREVIEW_LIFT_RATIO
 
 
 def preview_source_object() -> bpy.types.Object | None:
@@ -1333,9 +1331,20 @@ def refresh_result_appearance(context: bpy.types.Context) -> None:
     # is the only way to check the result sits *on* the surface instead of
     # hovering off it, and that is a thing you want to check mid-session.
     see_through = state.result_see_through
+    # A hand-edit overrides it for the mesh being edited: the vertices you are
+    # dragging are the point of the trip, and the CAD surface sits over half of
+    # them. This is Blender's In Front flag, so nothing moves -- the topology
+    # is still drawn exactly where it is, which an extra lift could not claim.
+    tweaking = (state.session_phase == 'TWEAK' and state.tweak_draw_in_front)
+
     active_name = ""
-    if state.session_active and state.session_object_name:
-        source_obj = bpy.data.objects.get(state.session_object_name)
+    # In the OBJECT phase the session holds no object, so a hand-edit started
+    # there names its own; without that the trip's own mesh is not the "active"
+    # one and the override lands on nothing.
+    source_name = state.session_object_name or (
+        state.tweak_source_object if state.session_phase == 'TWEAK' else "")
+    if state.session_active and source_name:
+        source_obj = bpy.data.objects.get(source_name)
         if source_obj is not None:
             active_name = result_object_name_for(source_obj)
 
@@ -1344,7 +1353,8 @@ def refresh_result_appearance(context: bpy.types.Context) -> None:
 
         if result_obj.name == active_name:
             _apply_result_look(result_obj, color, state.result_alpha,
-                               RESULT_MATERIAL_NAME, in_front=see_through,
+                               RESULT_MATERIAL_NAME,
+                               in_front=see_through or tweaking,
                                wire=_wire_wanted(state, True))
         elif state.session_active and state.highlight_all_results:
             _apply_result_look(result_obj, color, state.inactive_result_alpha,

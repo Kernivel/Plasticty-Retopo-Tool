@@ -699,15 +699,17 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   different question anyway.
 - **Cosmetic offsets are Displace modifiers, never baked.** Commit reads the
   preview's *base* mesh; the result offset sets `show_render = False`.
-  **And there is only one offset, not two.** `mesh_build.result_lift` is the
-  measure the committed result is pushed off the CAD surface by, and the
-  preview takes the same one times `PREVIEW_LIFT_RATIO` (`preview_lift`,
-  with `preview_offset` as an *extra* on top). **Both go through
-  `to_blender_units`**, which the extra one did not: it was added raw, so in
-  millimetres the two sliders sat on scales a thousand apart and one whole unit
-  of Extra Offset was a metre — the smallest usable drag threw the preview off
-  the model. Two controls that add up to one distance must agree on what a unit
-  is, which is also why they now share a soft range and a precision.
+  **And there is only one offset, and now only one control for it.**
+  `mesh_build.result_lift` is the measure the committed result is pushed off
+  the CAD surface by, and the preview takes that same one times
+  `PREVIEW_LIFT_RATIO` (`preview_lift`). An Extra Offset slider sat beside it
+  for a while, in a *separate* panel section, and both halves of that were
+  wrong: it read as an independent setting when it was an addend to a number
+  the preview already derives from, and it did not go through
+  `to_blender_units`, so in millimetres the two sliders sat on scales a
+  thousand apart and one whole unit of it was a metre — the smallest usable
+  drag threw the preview off the model. Preview and result are now one
+  Appearance section with one Offset in it (`state.show_appearance`).
   The preview used to sit at 0
   by default, i.e. on the surface and *under* every committed neighbour: a
   patch hovered before the click that removes its faces came back orange
@@ -718,7 +720,17 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   by refreshing the preview for the same reason, and `show_in_front` on the
   preview follows `result_see_through` (Shift+X) rather than being pinned on:
   checking the retopology against the surface has to include the patch being
-  built. The preview is stamped with its source object
+  built. The one thing that *does* override it is a hand-edit: for the length
+  of the `TWEAK` trip the result draws in front (`tweak_draw_in_front`, on by
+  default), because the vertices being dragged are the point of the trip and
+  the CAD surface hides half of them. It is Blender's In Front flag and not a
+  lift, deliberately — nothing moves, so what is on screen is still exactly
+  where the topology is, which no offset could claim. `enter_tweak` sets the
+  flag on the object directly rather than through `refresh_result_appearance`,
+  which also assigns materials and so writes to mesh data Blender owns in Edit
+  Mode; `refresh_result_appearance` knows about the phase too, so a redraw
+  triggered mid-edit agrees with the trip instead of undoing it, and
+  `exit_tweak` calls it to put the flag back under `result_see_through`. The preview is stamped with its source object
   (`PREVIEW_SOURCE_PROP`) so the automatic offset resolves outside a session
   too.
 - **Order matters in `end_session` / `exit_session_object`:** clear the state
@@ -1380,7 +1392,12 @@ mesh. Both displays are drawn as **one LINES batch each**, since a CAD part has
 hundreds of edges and a draw call apiece is what turns an overlay into a
 stutter.
 
-**Whether they draw through the model is `cad_display_xray`, on by default.**
+**Whether they draw through the model is `cad_display_xray`, off by default.**
+Through-the-mesh reads well on a flat layout and turns a curved or enclosed
+part into a thicket, since the far side shows through the near one, so the
+readable default is the honest one. `show_brep_vertices` is off by default for
+the same kind of reason: on a real part every junction is a dot and a few
+hundred of them bury the edges they punctuate.
 Through is what makes a whole part's layout readable at a glance; off is what
 makes a *curved or enclosed* one readable, because the far side stops showing
 through the near side. The reason it was `depth_test_set('NONE')`

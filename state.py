@@ -243,19 +243,6 @@ class RetopPatchState(bpy.types.PropertyGroup):
                      "in Solid shading, set the viewport's color mode to 'Object' to see it)",
         update=_appearance_update,
     )
-    preview_offset: bpy.props.FloatProperty(
-        # Same unit, same soft range and same precision as Result Offset, which
-        # it is added to: two sliders that add up to one distance and disagree
-        # on what a unit means are worse than useless.
-        name="Preview Offset", default=0.0, soft_min=-10.0, soft_max=10.0, precision=4,
-        description="Extra lift of the preview off the source surface (in the Length Unit "
-                     "above), on top of the one it already gets from Result Offset (which it "
-                     "follows, times a margin, so the patch being built always draws above the "
-                     "committed ones around it). Cosmetic only, never baked into the committed "
-                     "result",
-        update=_appearance_update,
-    )
-
     result_color: bpy.props.FloatVectorProperty(
         name="Result Color", subtype='COLOR', size=3, default=(0.15, 0.55, 0.95),
         min=0.0, max=1.0, description="Albedo of the committed retopology result mesh",
@@ -337,7 +324,10 @@ class RetopPatchState(bpy.types.PropertyGroup):
                      "writes into the mesh, so it needs no live connection. E toggles it",
     )
     show_brep_vertices: bpy.props.BoolProperty(
-        name="Show CAD Vertices", default=True,
+        # Off by default: on a real part every junction is a dot, and a few
+        # hundred of them bury the edges they punctuate. It answers a question
+        # you ask about one corner, not one you leave standing.
+        name="Show CAD Vertices", default=False,
         description="Dot every junction where two CAD edges meet -- a genuine B-rep vertex, as "
                      "opposed to the many boundary vertices the mesher put down. Those are the "
                      "points patches weld to each other by. These dots are drawn in screen space "
@@ -366,7 +356,10 @@ class RetopPatchState(bpy.types.PropertyGroup):
                      "model's layout readable; one patch is what keeps a dense part legible",
     )
     cad_display_xray: bpy.props.BoolProperty(
-        name="Draw Through the Mesh", default=True,
+        # Off by default: through-the-mesh reads well on a flat layout and
+        # turns a curved or enclosed part into a thicket, since the far side
+        # shows through the near one. The readable default is the honest one.
+        name="Draw Through the Mesh", default=False,
         description="Draw the CAD edges and surface flow over everything, including the parts of "
                      "the model in front of them. Off: they are occluded like real geometry, so "
                      "the back of a part stops showing through the front -- which is what makes a "
@@ -486,6 +479,15 @@ class RetopPatchState(bpy.types.PropertyGroup):
                      "merged when you ask (M > By Distance), which is safer on dense retopology "
                      "where the threshold could catch a neighbouring vertex",
     )
+    tweak_draw_in_front: bpy.props.BoolProperty(
+        name="Draw In Front While Editing", default=True,
+        update=_appearance_update,
+        description="Draw the retopology over the CAD surface for the length of a hand-edit, so "
+                     "the vertices you are moving stay visible where the surface would hide "
+                     "them. This is Blender's own In Front flag, not a lift: nothing moves, so "
+                     "what you see is still exactly where the topology is. Off: the retopology "
+                     "is occluded as usual, which is how you check it sits on the surface",
+    )
     tweak_snap_surface: bpy.props.BoolProperty(
         name="Snap to CAD Surface", default=True,
         description="Add Face Nearest to the vertex snapping while hand-editing, so a vertex you "
@@ -579,8 +581,11 @@ class RetopPatchState(bpy.types.PropertyGroup):
     # --- collapsible UI sections (sub-sections inside a tab) ---
     show_patch_settings: bpy.props.BoolProperty(name="Patch Settings", default=True)
     show_ngon_settings: bpy.props.BoolProperty(name="N-gon Mode", default=True)
-    show_preview_appearance: bpy.props.BoolProperty(name="Preview Appearance", default=False)
-    show_result_appearance: bpy.props.BoolProperty(name="Result Appearance", default=False)
+    # One section, because there is one distance: the preview's lift *is* the
+    # result's, times a margin. Two panels each with an offset slider read as
+    # two independent settings, which is exactly what they are not.
+    show_appearance: bpy.props.BoolProperty(name="Appearance", default=False)
+    show_cad_structure: bpy.props.BoolProperty(name="Plasticity Structure", default=True)
 
 
 # Multipliers for the Resolution preset. Powers of two, so each step is one

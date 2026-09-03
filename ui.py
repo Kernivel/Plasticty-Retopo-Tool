@@ -372,6 +372,11 @@ def _draw_tweak_settings(
     body.prop(state, "tweak_merge_distance")
     body.prop(state, "tweak_snap_surface")
     body.label(text="Applied when Edit Mode opens", icon='INFO')
+    # Not part of the tool-settings snapshot: it is this addon's own draw flag
+    # on its own object, so it takes effect at once rather than on the next
+    # trip -- and it moves nothing, which is the whole point of it.
+    body.separator()
+    body.prop(state, "tweak_draw_in_front")
 
 
 def _draw_tab_patch(
@@ -450,27 +455,34 @@ def _draw_tab_display(
     state: "state_mod.RetopPatchState",
     obj: bpy.types.Object | None,
 ) -> None:
-    body = _section(layout, state, "show_preview_appearance",
-                    "Preview Appearance", icon='SHADING_RENDERED')
-    if body:
-        body.prop(state, "preview_color")
-        body.prop(state, "preview_alpha", slider=True)
-        body.prop(state, "preview_offset", text="Extra Offset")
-        note = body.column()
-        note.label(text="Follows Result Offset; adds to it", icon='INFO')
-        note.enabled = False
-
     result_obj = None
     if obj is not None and obj.type == 'MESH':
         result_obj = bpy.data.objects.get(mesh_build.result_object_name_for(obj))
-    body = _section(layout, state, "show_result_appearance",
-                    "Result Appearance", icon='SHADING_SOLID')
+
+    # Preview and result in one section, under one offset. They are not two
+    # settings: the preview's lift *is* the result's, times a fixed margin that
+    # keeps the patch being built above its committed neighbours.
+    body = _section(layout, state, "show_appearance",
+                    "Appearance", icon='SHADING_RENDERED')
     if body:
+        body.label(text="Preview", icon='SHADING_RENDERED')
+        body.prop(state, "preview_color", text="Color")
+        body.prop(state, "preview_alpha", slider=True, text="Alpha")
+
+        body.separator()
+        body.label(text="Result", icon='SHADING_SOLID')
         if result_obj is not None:
             body.label(text=result_obj.name, icon='OUTLINER_OB_MESH')
-        body.prop(state, "result_color")
-        body.prop(state, "result_alpha", slider=True)
-        body.prop(state, "result_offset")
+        body.prop(state, "result_color", text="Color")
+        body.prop(state, "result_alpha", slider=True, text="Alpha")
+
+        body.separator()
+        body.prop(state, "result_offset", text="Offset")
+        note = body.column()
+        note.label(text="Lifts both; the preview by a", icon='INFO')
+        note.label(text="little more, so it stays on top.")
+        note.enabled = False
+
         body.separator()
         body.prop(state, "result_see_through")
         body.prop(state, "result_show_wire")
@@ -510,8 +522,11 @@ def _draw_cad_display(
     the *CAD model*, not the retopology, and it is the one display you turn on
     before picking anything.
     """
-    box = layout.box().column()
-    box.label(text="Plasticity Structure", icon='MOD_WIREFRAME')
+    box = _section(layout, state, "show_cad_structure",
+                   "Plasticity Structure", icon='MOD_WIREFRAME')
+    if box is None:
+        return
+    box = box.column()
     box.separator()
 
     box.prop(state, "show_cad_edges", text="CAD Edges (E)", toggle=False)
