@@ -47,3 +47,28 @@ kbd {
   vertical-align: -0.05em;
   border: 1px solid #999;
 }
+
+/* Above 1100px the theme deliberately pins the content column to the left
+   (`.wy-nav-content{margin:0}`) and fills the rest with a grey gutter. On a
+   wide monitor that reads as a page that failed to lay out, and the reference
+   tables have no room while a third of the window sits empty. Centred, and
+   wider -- 800px is a comfortable measure for prose but not for a six-column
+   settings table. Same media query as the rule it overrides, or the theme's
+   `margin:0` wins back above 1100px. */
+@media screen and (min-width: 1100px) {
+  .wy-nav-content {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+}
+
+/* The bar at the foot of the sidebar packs the repo link and the prev/next
+   links into a fixed 300px. Laying them out as a wrapping flex row keeps them
+   from overlapping whatever they end up containing. */
+.rst-versions .rst-current-version {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.3em 0.9em;
+  line-height: 1.4;
+}
