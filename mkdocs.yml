@@ -1,0 +1,62 @@
+site_name: Plasticity Retop
+site_description: Patch-based retopology for CAD meshes in Blender
+site_url: https://kernivel.github.io/Plasticty-Retopo-Tool/
+repo_url: https://github.com/Kernivel/Plasticty-Retopo-Tool
+repo_name: Kernivel/Plasticty-Retopo-Tool
+copyright: Plasticity Retop is an independent project, not affiliated with Plasticity.
+
+# The addon package lives at the repository root, so the docs sit in a
+# subfolder and everything else is left alone.
+docs_dir: docs
+site_dir: site
+
+# Ships with MkDocs itself, so requirements-docs.txt stays to two lines.
+# It understands plain Markdown plus admonitions and nothing else -- no icons,
+# no content tabs, no collapsible blocks, no Mermaid. The pages are written to
+# that limit deliberately; adding an extension the theme cannot style produces
+# a page that builds cleanly and reads as broken.
+theme:
+  name: readthedocs
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+  # Click an image to open it full size. Videos are untouched by it.
+  - glightbox:
+      touchNavigation: true
+      loop: false
+      effect: zoom
+      draggable: true
+
+markdown_extensions:
+  # MkDocs always adds toc, tables and fenced_code on top of these.
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: installation.md
+      - Your first patch: first-patch.md
+      - Workflow: session.md
+  - Guide:
+      - How it works: guide/generators.md
+      - Matching a neighbour: guide/matching.md
+      - N-gon mode: guide/ngon.md
+      - Faces with a hole: guide/rings.md
+      - Symmetry: guide/symmetry.md
+      - Hand-editing the result: guide/hand-editing.md
+      - Seeing the CAD structure: guide/cad-structure.md
+  - Reference:
+      - Keymap: reference/keymap.md
+      - The N-panel: reference/panel.md
+      - Troubleshooting: reference/troubleshooting.md
+  - Contributing:
+      - Development: contributing/development.md
+      - Recording media: contributing/media.md

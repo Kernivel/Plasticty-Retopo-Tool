@@ -3,6 +3,9 @@
 A Blender addon for patch-based retopology of CAD meshes imported through the
 Plasticity ↔ Blender bridge.
 
+**📖 [Documentation](https://kernivel.github.io/Plasticty-Retopo-Tool/)** — built from
+`docs/` by `.github/workflows/docs.yml`. Nothing in `docs/` ships with the addon.
+
 ## Setting up on a new machine
 
 1. **Install Blender** (4.2+; developed against 5.1).

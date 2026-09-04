@@ -16,7 +16,14 @@ import sys
 ADDON_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDON_NAME = os.path.basename(ADDON_DIR)
 
-SKIP_DIRS = {"__pycache__", ".git", "tests", "scripts", ".github"}
+# Names never copied into Blender's addons folder -- directories and files
+# alike, since shutil.copytree's ignore callback is handed both. The docs
+# site lives in this repo (see docs/), and a Blender addon has no use for it.
+SKIP_DIRS = {
+    "__pycache__", ".git", ".github", ".idea", ".junie",
+    "tests", "scripts",
+    "docs", "site", "mkdocs.yml", "requirements-docs.txt",
+}
 
 
 def blender_config_roots():

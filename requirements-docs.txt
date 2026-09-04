@@ -1,0 +1,5 @@
+# Documentation site only -- not needed to run or test the addon.
+#   pip install -r requirements-docs.txt
+#   python -m mkdocs serve
+mkdocs==1.6.1
+mkdocs-glightbox==0.4.0

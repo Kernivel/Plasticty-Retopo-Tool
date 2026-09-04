@@ -9,3 +9,6 @@ __pycache__/
 # Plasticity's own backup folder next to the fixture source: autosave, hourly
 # and daily copies. The deliberate save is tests/fixtures/TestCases.plasticity.
 tests/fixtures/plasticity/
+
+# MkDocs build output (docs/ is the source, site/ is generated).
+site/
