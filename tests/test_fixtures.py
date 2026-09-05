@@ -343,6 +343,17 @@ EXPECTED = {
         max_deviation_pct=None,
         open_edges=None,
     ),
+    "Truncated Cone": dict(
+        source_tris=264, patches=3,
+        result_verts=912, result_faces=812,
+        faces=[
+            (90207, "Ring", 2, 2),
+            (90212, "Quad", 4, 1),
+            (93228, "Quad", 4, 1),
+        ],
+        max_deviation_pct=0.11,  # measured 0.0807%
+        open_edges=200,
+    ),
 }
 
 # Faces whose every polygon is coplanar, so the retopology has to reproduce

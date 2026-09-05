@@ -14,7 +14,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | Blender | 5.1.1 |
 | Addon | 0.56.0 (2026-09-03-d) |
 | Resolution | MID |
-| Fixture | `tests/fixtures/TestCases.blend`, 15 objects |
+| Fixture | `tests/fixtures/TestCases.blend`, 16 objects |
 
 **Deviation is a percentage of each object's bounding-box diagonal, sampled across face interiors** — never at vertices, which the generators put on the surface by construction and which therefore read ~0 on every shape. The `vertex` column is shown only to make that point: it is the number a naive measurement would report.
 
@@ -37,6 +37,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | `Square Plate Small Hole Far Away` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 16v / 14f | 0.0007% | 0 |
 | `Square Plate Small Hole Scaled Down` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 12v / 10f | 0.0661% | 0 |
 | `Torus` | 27126 | 1 | 1&nbsp;unusable | — | — | — |
+| `Truncated Cone` | 264 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 912v / 812f | 0.0807% | 200 |
 
 ## Deviation from the CAD surface
 
@@ -55,6 +56,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | `Square Plate Small Hole` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
 | `Square Plate Small Hole Far Away` | 0.0000% | 0.0001% | 0.0000% | **0.0007%** | 0.0000% |
 | `Square Plate Small Hole Scaled Down` | 0.0059% | 0.0172% | 0.0441% | **0.0661%** | 0.0001% |
+| `Truncated Cone` | 0.0147% | 0.0236% | 0.0494% | **0.0807%** | 0.0003% |
 
 A large `max` against a modest `p95` means a few samples are far out rather than the whole surface being off — which is the signature of a hole being paved over, or an apex no grid represents.
 
@@ -75,6 +77,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | `Square Plate Small Hole` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 | `Square Plate Small Hole Far Away` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 | `Square Plate Small Hole Scaled Down` | 12 | 10 | 10&times;4-gon | 0 | 0 | 0 | 0 | 8 |
+| `Truncated Cone` | 912 | 812 | 812&times;4-gon | 200 | 0 | 0 | 0 | 0 |
 
 **Non-manifold, unwelded and inward-facing are zero everywhere**, which is the set worth being strict about. "Inward" counts faces pointing the opposite way from the CAD surface under them -- a whole patch can turn over without changing any other number in this table, which is exactly what a matched rim leading a band once did. Open-edge counts are a worst case rather than a quality score: this run commits in the fixture's own face order, and auto-matching can only match an *already committed* neighbour, so a patch baked early can never weld to one baked later.
 
@@ -95,6 +98,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | `Square Plate Small Hole` | 5.00 | 800.00 | **800.0** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Far Away` | 5.00 | 798.92 | **798.9** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Scaled Down` | 3.54 | 7.07 | **7.1** | 0.0° | 45.0° | 45.0° | 0.68 |
+| `Truncated Cone` | 1.14 | 1.79 | **1.8** | 2.2° | 44.7° | 81.9° | 0.30 |
 
 Percentiles and worst, never means: the failure mode is a handful of degenerate cells from a fan or a stretched band, and a mean hides exactly that. `Edge cv` is the coefficient of variation of edge length — how uneven the mesh is overall.
 
