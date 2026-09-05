@@ -44,6 +44,23 @@ def _addon_keymap_items() -> list[tuple[bpy.types.KeyMap, bpy.types.KeyMapItem]]
     return pairs
 
 
+def developer_mode() -> bool:
+    """Whether the addon's own development affordances are shown.
+
+    Off by default: the reload buttons and the stale-load warning only mean
+    anything when the addon is being *edited* from a checkout. Installed from a
+    release zip there is nothing to reload against, and a button that reloads
+    the code you just installed is at best noise.
+
+    Read through `keymap.preferences`, which returns None when the package is
+    imported plainly rather than as an installed addon -- which is the tests
+    and `--background`. Missing preferences read as off, so nothing here can
+    make a headless run depend on a user setting.
+    """
+    prefs = keymap.preferences()
+    return bool(getattr(prefs, "developer_mode", False))
+
+
 def draw_keymap(layout: bpy.types.UILayout) -> None:
     """The keybind rows. Shared by the preferences page and nothing else yet."""
     import rna_keymap_ui  # Blender ships it; imported lazily, it is UI-only
@@ -84,11 +101,21 @@ class RETOP_AddonPreferences(bpy.types.AddonPreferences):
     # it is the one class-body annotation a registered class may carry.
     global_keys_outside_session: bpy.props.BoolProperty(
         name="Global Keys Outside a Session",
-        description=("Keep Isolate ('/'), Mirror (Alt+X) and Retopo X-ray (Shift+X) live when no "
+        description=("Keep Isolate ('/'), Mirror (Alt+X) and Retopo X-ray (V) live when no "
                      "retopology session is running. Off by default so the addon claims no key "
                      "unless it is being used -- with it off, those keys fall straight through to "
                      "Blender and to other addons (Hard Ops binds Alt+X too). The session's own "
                      "keys are never affected: they only ever exist while a session is open"),
+        default=False,
+    )
+
+    developer_mode: bpy.props.BoolProperty(
+        name="Developer Mode",
+        description=("Show the System tab's reload buttons and the stale-code warning. Reloading "
+                     "is for working on the addon from a checkout, where the panel's version "
+                     "string is the only way to tell a deploy actually took. An addon installed "
+                     "from a release zip is reloaded by re-installing it, so the buttons are "
+                     "hidden by default rather than offering a developer's workflow to everyone"),
         default=False,
     )
 
@@ -97,13 +124,10 @@ class RETOP_AddonPreferences(bpy.types.AddonPreferences):
         layout.label(text="Keybinds", icon='EVENT_A')
         box = layout.box()
         box.prop(self, "global_keys_outside_session")
-        box.label(
-            text="Off: no addon key is live outside a session, so nothing is taken from other addons",
-            icon='INFO')
-        layout.label(
-            text="Also under Preferences > Keymap > Add-ons > 3D View",
-            icon='INFO')
         draw_keymap(layout)
+        layout.separator()
+        layout.label(text="Development", icon='CONSOLE')
+        layout.box().prop(self, "developer_mode")
 
 
 CLASSES = (RETOP_AddonPreferences,)

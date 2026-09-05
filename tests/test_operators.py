@@ -561,7 +561,7 @@ state.session_phase = 'PATCH'
 # exit).
 check("patch phase overlay shows its own binds",
       [k for k, _a in pr.overlay.keybinds_for(state)]
-      == ["Click", "Tab", "Alt+X", "E", "Shift+X", "Esc"],
+      == ["Click", "Tab", "Alt+X", "E", "V", "Esc"],
       str(pr.overlay.keybinds_for(state)))
 
 # ---------------------------------------------------------------------------

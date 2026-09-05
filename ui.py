@@ -6,6 +6,7 @@ from . import constants
 from . import keymap
 from . import mesh_build
 from . import operators
+from . import prefs
 from . import sidematch
 from . import version
 
@@ -238,13 +239,15 @@ def _draw_active_patch(
         note.label(text=f"N-gon unavailable: {state.ngon_unavailable_reason}", icon='INFO')
 
     if state.ngon_mode and state.ngon_available:
+        # `ngon_angle` and nothing else: it is this patch's resolution, the
+        # thing Ctrl+wheel drives, and it belongs beside the commit button for
+        # the same reason a span does. The vertex dots are a *display*
+        # setting -- they change nothing about the mesh -- and they already sit
+        # in the settings tab, so having them here too made the patch block
+        # look as though the mode changed more than it does.
         box.prop(state, "ngon_angle")
         if state.num_loops == 2:
             box.label(text="Hole bridged with 2 edges (2 n-gons)", icon='MESH_TORUS')
-        box.prop(state, "ngon_show_verts")
-        sub_dots = box.column()
-        sub_dots.enabled = state.ngon_show_verts
-        sub_dots.prop(state, "ngon_vert_size")
         row = box.row(align=True)
         row.operator("retop.commit_patch",
                      text="Replace" if state.editing_committed else "Commit",
@@ -313,9 +316,6 @@ def _draw_match_block(
     elif state.match_mode:
         box.label(text="Click a side to match it", icon='EYEDROPPER')
 
-    if state.match_mode:
-        box.label(text="Ctrl+click follows the CAD edge instead", icon='INFO')
-
     pinned = _pinned_sides(state)
     if pinned:
         box.label(text=f"{len(pinned)} side(s) matched by hand", icon='CHECKMARK')
@@ -353,9 +353,7 @@ def _draw_matching_settings(
     body: bpy.types.UILayout, state: "state_mod.RetopPatchState"
 ) -> None:
     body.prop(state, "auto_match_neighbours")
-    body.label(text="Applies to every generator", icon='INFO')
     body.prop(state, "match_margin")
-    body.label(text="Only sides you point at use it", icon='INFO')
 
 
 def _draw_tweak_settings(
@@ -371,7 +369,6 @@ def _draw_tweak_settings(
     body.prop(state, "tweak_auto_merge")
     body.prop(state, "tweak_merge_distance")
     body.prop(state, "tweak_snap_surface")
-    body.label(text="Applied when Edit Mode opens", icon='INFO')
     # Not part of the tool-settings snapshot: it is this addon's own draw flag
     # on its own object, so it takes effect at once rather than on the next
     # trip -- and it moves nothing, which is the whole point of it.
@@ -397,7 +394,6 @@ def _draw_patch_settings(
 ) -> None:
     body.label(text="Starting Resolution")
     body.row(align=True).prop(state, "resolution", expand=True)
-    body.label(text="Scales the computed span count", icon='INFO')
     body.separator()
     body.label(text="Corner Detection")
     col = body.column(align=True)
@@ -406,8 +402,6 @@ def _draw_patch_settings(
     col.separator()
     col.label(text="N-gon mode:")
     col.row(align=True).prop(state, "corner_method_ngon", expand=True)
-    if 'TOPOLOGY' in (state.corner_method_spans, state.corner_method_ngon):
-        body.label(text="Falls back to angle if no junction", icon='INFO')
     sub_angle = body.column()
     sub_angle.enabled = 'ANGLE' in (state.corner_method_spans, state.corner_method_ngon) \
         or 'BOTH' in (state.corner_method_spans, state.corner_method_ngon)
@@ -428,8 +422,6 @@ def _draw_ngon_settings(
     sub_dots.enabled = state.ngon_show_verts
     sub_dots.prop(state, "ngon_vert_size")
     body.separator()
-    body.label(text="N toggles it during a session", icon='INFO')
-    body.label(text="Flat faces only; one hole is bridged", icon='INFO')
 
 
 def _draw_tab_picker(
@@ -478,22 +470,15 @@ def _draw_tab_display(
 
         body.separator()
         body.prop(state, "result_offset", text="Offset")
-        note = body.column()
-        note.label(text="Lifts both; the preview by a", icon='INFO')
-        note.label(text="little more, so it stays on top.")
-        note.enabled = False
-
         body.separator()
         body.prop(state, "result_see_through")
         body.prop(state, "result_show_wire")
         sub_wire = body.column()
-        sub_wire.label(text="Shown while a session runs", icon='INFO')
         sub_wire.enabled = state.result_show_wire
         sub_wire.prop(state, "result_wire_opacity", slider=True)
         # Blender has no per-object wireframe opacity: this drives the
         # viewport's own overlay setting, so say so rather than let it look
         # like a per-object one.
-        sub_wire.label(text="Viewport overlay: affects all wireframes", icon='INFO')
         body.separator()
         body.prop(state, "highlight_all_results")
         sub = body.row()
@@ -509,8 +494,6 @@ def _draw_tab_display(
     box = layout.box().column()
     box.label(text="Isolate  ( / )", icon='ZOOM_SELECTED')
     box.prop(state, "local_view_include_retop")
-    if state.local_view_include_retop:
-        box.label(text="Isolating also shows <Object>_Retop", icon='INFO')
 
 
 def _draw_cad_display(
@@ -542,20 +525,11 @@ def _draw_cad_display(
     sub_flow.enabled = state.show_surface_flow
     sub_flow.prop(state, "flow_color", text="")
     sub_flow.prop(state, "flow_density")
-    # Say what it is, plainly: the bridge carries no surface parameters, so
-    # these are not Plasticity's isoparms and should not be read as them.
-    sub_flow.label(text="Derived from each face's boundary,", icon='INFO')
-    sub_flow.label(text="not Plasticity's own isoparms.")
-
     box.separator()
     box.prop(state, "cad_display_xray")
-    if not state.cad_display_xray:
-        box.label(text="B-rep dots still draw on top", icon='INFO')
-
     box.separator()
     box.label(text="Show for:")
     box.row(align=True).prop(state, "cad_display_scope", expand=True)
-    box.label(text="Drawn while a session runs", icon='INFO')
 
 
 def _draw_mirror(
@@ -596,9 +570,6 @@ def _draw_mirror(
     body.separator()
     body.prop(state, "mirror_clip")
     body.prop(state, "mirror_merge_distance")
-    # The one thing worth a line: the mirrored half is a modifier, so it can't
-    # be picked or re-edited until it is applied.
-    body.label(text="Mirrored half is a modifier", icon='INFO')
     body.operator("retop.apply_mirror", text="Apply Mirror", icon='CHECKMARK')
 
 
@@ -616,14 +587,11 @@ def _draw_tab_output(
     sub_sharp = body.column()
     sub_sharp.enabled = state.result_shade_smooth
     sub_sharp.prop(state, "sharp_edge_angle")
-    sub_sharp.label(text="Creases patch borders only", icon='INFO')
 
     body = layout.box().column()
     body.label(text="Collections", icon='OUTLINER_COLLECTION')
     body.separator()
     body.prop(state, "mirror_source_collections")
-    if state.mirror_source_collections:
-        body.label(text="Mirrors the path below Inbox", icon='INFO')
 
 
 def _draw_tab_keys(
@@ -657,10 +625,18 @@ def _draw_tab_system(layout: bpy.types.UILayout) -> None:
     body.label(text=f"Version {version.ADDON_VERSION}")
     body.label(text=f"Build {version.BUILD_ID}")
     body.separator()
-    # "Reload Addon Only" first: plain Reload Scripts can silently half-fail
-    # when another installed addon errors during its own reload.
-    body.operator("retop.reload_addon", text="Reload Addon Only", icon='FILE_REFRESH')
-    body.operator("script.reload", text="Reload Scripts", icon='BLENDER')
+    # The reload buttons are a *developer's* affordance and are hidden unless
+    # the preference says so. Installed from a release zip there is nothing to
+    # reload against: the way to get new code is to install the new zip. Left
+    # on for everyone, the pair reads as a fix-it button for any misbehaviour,
+    # which is exactly what it is not.
+    if prefs.developer_mode():
+        # "Reload Addon Only" first: plain Reload Scripts can silently half-fail
+        # when another installed addon errors during its own reload.
+        body.operator("retop.reload_addon", text="Reload Addon Only", icon='FILE_REFRESH')
+        body.operator("script.reload", text="Reload Scripts", icon='BLENDER')
+    else:
+        body.label(text="Reload buttons: Preferences > Add-ons > Developer Mode")
 
 
 class VIEW3D_PT_retop(bpy.types.Panel):
@@ -685,7 +661,9 @@ class VIEW3D_PT_retop(bpy.types.Panel):
         # running yesterday's code looks exactly like a broken feature -- and
         # the tracebacks it produces point at line numbers that don't match the
         # file you're reading.
-        stale = version.stale_load()
+        # Only a checkout can *be* stale: an installed zip has one copy of the
+        # code and nothing writes over it between reloads.
+        stale = version.stale_load() if prefs.developer_mode() else None
         if stale:
             warn = layout.box().column(align=True)
             warn.alert = True

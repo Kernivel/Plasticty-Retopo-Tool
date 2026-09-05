@@ -290,8 +290,12 @@ else:
           f"{len(registered)} vs {declared}")
     check("the mirror is on Alt+X",
           ('X', False, False, True, "retop.mirror") in registered, registered)
-    check("the x-ray on Shift+X",
-          ('X', False, True, False, "retop.toggle_see_through") in registered,
+    # `V`, and deliberately not any flavour of `X`: the mirror wants Alt+X and
+    # the patch delete wants a bare X, and hanging a third meaning off the same
+    # letter is how Shift+X ended up reaching `object.delete`'s confirmation
+    # popup instead of the toggle.
+    check("the x-ray on V",
+          ('V', False, False, False, "retop.toggle_see_through") in registered,
           registered)
     check("commit answers to three things",
           len(km.items_for("commit")) == 3, km.describe_all("commit"))

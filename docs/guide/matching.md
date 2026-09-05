@@ -40,8 +40,8 @@ surface:
     you typed over since, is not green — it says so in the tooltip by the cursor
     instead.
 
-**Click a side** to pin it to the committed neighbour across it.
-**<kbd>Ctrl</kbd>+click** pins it to its own CAD tessellation instead.
+**Click a side** to pin it: to the committed neighbour across it, or — when
+nothing across it is retopologized yet — to the side's own CAD tessellation.
 **Click a matched side again** to turn the match off.
 
 The overlay also draws **which vertices the match would take** — dots on the
@@ -51,18 +51,22 @@ match going to the wrong neighbour or stopping short is invisible from a coloure
 line lying on the boundary.
 
 <!-- media: 15s. Hover along the sides of one patch so each colour and its
-     tooltip appears, then click one and Ctrl+click another. -->
+     tooltip appears, then click one and click another. -->
 
 ## Three kinds of pin
 
 | | Gesture | Follows |
 |---|---|---|
-| **Neighbour** | click | the committed patch across the side |
-| **Source** | <kbd>Ctrl</kbd>+click | the side's own CAD tessellation, thinned by curvature |
+| **Neighbour** | click a side with a committed neighbour | the committed patch across the side |
+| **Source** | click a side with none | the side's own CAD tessellation, thinned by curvature |
 | **Excluded** | click a matched side | nothing — leave this side alone |
 
 **Source** needs no neighbour at all, so it works on the very first patch of a
-model and on any side facing nothing yet.
+model and on any side facing nothing yet. It has no gesture of its own: one
+click covers both, because a side with nothing across it has only one thing it
+could possibly follow. (<kbd>Ctrl</kbd>+click used to force it even where a
+neighbour *was* available — keeping the CAD density instead of welding — and
+that was not worth a modifier on the picker's only click.)
 
 **Excluded** exists because with automatic matching on — the default — releasing
 the *pin* is invisible: the automatic pass would put the match straight back on

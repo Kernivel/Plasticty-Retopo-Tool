@@ -238,7 +238,7 @@ class RetopPatchState(bpy.types.PropertyGroup):
         update=_appearance_update,
     )
     preview_alpha: bpy.props.FloatProperty(
-        name="Preview Alpha", default=0.6, min=0.0, max=1.0,
+        name="Preview Alpha", default=0.33, min=0.0, max=1.0,
         description="Opacity of the preview overlay (Material Preview/Rendered shading; "
                      "in Solid shading, set the viewport's color mode to 'Object' to see it)",
         update=_appearance_update,

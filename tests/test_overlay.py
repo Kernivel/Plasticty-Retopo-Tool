@@ -215,6 +215,40 @@ check("_draw_vertex_dots is safe with no region",
       call(lambda: overlay._draw_vertex_dots(bpy.context, state, None),
            "_draw_vertex_dots"))
 
+
+# ===========================================================================
+# The mirror's axis gizmo
+# ===========================================================================
+# Its own handler, because the mirror is a GLOBAL key: with
+# `global_keys_outside_session` on it is armed with no session running and no
+# session overlay installed. Which means nothing else here would ever call it.
+overlay.enable_mirror_gizmo()
+check("the gizmo installs its own handler", overlay._mirror_handle is not None)
+overlay.enable_mirror_gizmo()
+check("arming it twice does not stack a second one",
+      overlay._mirror_handle is not None)
+
+check("it draws nothing with no cursor recorded",
+      call(overlay._draw_mirror_gizmo, "_draw_mirror_gizmo"))
+
+overlay.mirror_cursor = (400, 300)
+for axes in ((False, False, False), (True, False, False), (True, True, True)):
+    overlay.mirror_state = axes
+    check(f"_draw_mirror_gizmo survives axes={axes}",
+          call(overlay._draw_mirror_gizmo, "_draw_mirror_gizmo"))
+
+overlay.disable_mirror_gizmo()
+check("disabling it drops the handler", overlay._mirror_handle is None)
+check("and the cursor it drew from", overlay.mirror_cursor is None)
+overlay.disable_mirror_gizmo()
+check("and is safe twice", True)
+
+# A session teardown or a reload must not leave the prompt's handler behind.
+overlay.enable_mirror_gizmo()
+overlay.disable()
+check("overlay.disable() takes the gizmo with it",
+      overlay._mirror_handle is None)
+
 print()
 if FAILURES:
     print(f"=== {len(FAILURES)} FAILURE(S): {FAILURES}")

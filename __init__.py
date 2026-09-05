@@ -1,7 +1,11 @@
 bl_info = {
     "name": "Plasticity Retop",
     "author": "",
-    "version": (0, 1, 0),
+    # Kept in step with version.ADDON_VERSION by hand -- two literals in two
+    # files, which is why scripts/build_zip.py refuses to build when they
+    # disagree. Blender parses this as source before any of this code runs, so
+    # nothing can derive it.
+    "version": (0, 58, 0),
     "blender": (4, 2, 0),
     "location": "View3D > N-panel > Retop",
     "description": "Patch-based retopology assistant for meshes imported via the Plasticity bridge",

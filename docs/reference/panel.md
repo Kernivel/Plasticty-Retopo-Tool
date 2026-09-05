@@ -49,7 +49,7 @@ Preview and result appearance, the CAD overlays, isolate behaviour.
 | **Preview Color / Alpha** | orange, 0.6 | |
 | **Result Color / Alpha** | blue, 1.0 | |
 | **Offset** | 0 | How far the committed result is pushed off the CAD surface. The preview takes the same measure times a small margin, so a hovered patch never sits *under* a committed neighbour |
-| **See Retopo Through Meshes** | on | <kbd>Shift</kbd>+<kbd>X</kbd>. Turning it **off** is the only way to check the retopology sits on the surface rather than floating off it |
+| **See Retopo Through Meshes** | on | <kbd>V</kbd>. Turning it **off** is the only way to check the retopology sits on the surface rather than floating off it |
 | **Show Wireframe** | on | Scoped to in-session result meshes |
 | **Wireframe Opacity** | 0.5 | Blender has no per-object wireframe opacity, so this writes to every 3D viewport — the panel says so |
 | **Show All Retopo** | on | Draw other objects' retopology too |
@@ -89,7 +89,14 @@ edit every binding, plus a read-only list of what is
 
 ## System
 
-The version and build string, the on-disk comparison, and **Reload Addon Only**.
+The version and build string — and, with **Developer Mode** on, the on-disk
+comparison and **Reload Addon Only**.
+
+Developer Mode lives in the addon's own preferences
+(`Preferences > Add-ons > Plasticity Retop`) and is off by default. Installed
+from a release zip there is nothing to reload against: one copy of the code,
+replaced when you install the next zip. The rest of this section is the
+development loop.
 
 !!! danger "Read the red line first"
 

@@ -18,7 +18,6 @@ arrow puts one back.
 | <kbd>N</kbd> | N-gon mode |
 | <kbd>M</kbd> | Side highlight on/off |
 | Click a side | Match the committed neighbour across it |
-| <kbd>Ctrl</kbd> + click a side | Match that side's own CAD edge instead |
 | Click a matched side | Turn that match off |
 | <kbd>X</kbd> | Delete the patch (re-edit only) |
 | Right click / <kbd>Enter</kbd> / click on no side | Commit |
@@ -39,7 +38,7 @@ arrow puts one back.
 | <kbd>E</kbd> | Plasticity edges on/off |
 | <kbd>Ctrl</kbd> + <kbd>E</kbd> | Surface flow on/off |
 | <kbd>Alt</kbd> + <kbd>X</kbd>, then <kbd>X</kbd>/<kbd>Y</kbd>/<kbd>Z</kbd> | Mirror the retopology on that axis |
-| <kbd>Shift</kbd> + <kbd>X</kbd> | Draw the retopology through everything on/off |
+| <kbd>V</kbd> | Draw the retopology through everything on/off |
 | <kbd>/</kbd> | Isolate, retopology included |
 | <kbd>Ctrl</kbd> + <kbd>Z</kbd> | Blender's undo — one step per committed patch |
 
@@ -76,7 +75,7 @@ cursor. Taking the side is a normal binding like any other.
 ## Outside a session
 
 **No key of the addon's is live outside a session.** The three global ones
-(<kbd>/</kbd>, <kbd>Alt</kbd>+<kbd>X</kbd>, <kbd>Shift</kbd>+<kbd>X</kbd>) are
+(<kbd>/</kbd>, <kbd>Alt</kbd>+<kbd>X</kbd>, <kbd>V</kbd>) are
 all keys something else wants — Hard Ops binds `Alt+X`, and <kbd>/</kbd> is
 Blender's own isolate — and an addon that has to be *disabled* to give a key back
 is not self-contained.

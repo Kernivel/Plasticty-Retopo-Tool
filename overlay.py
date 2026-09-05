@@ -184,8 +184,8 @@ def keybinds_for(
 
     # The retopo x-ray is offered in every phase: it is the binding that
     # answers "is the retopology where I think it is", and that comes up at any
-    # point. It sits on Shift+X because Alt+X now belongs to the mirror -- the
-    # Hard Ops reflex.
+    # point. It sits on `V`, off the `X` the mirror and the patch delete share:
+    # Shift+X came out as `object.delete`'s confirmation popup in practice.
     see_through = (key("see_through"), "Retopo X-Ray: "
                    + ("on" if getattr(state, "result_see_through", True) else "off"))
     # Which axes are currently mirrored lives on the modifier, not in state,
@@ -272,10 +272,7 @@ def keybinds_for(
     binds.append(see_through)
     binds.append((key("match_mode"), "Side highlight: "
                   + ("on" if getattr(state, "match_mode", True) else "off")))
-    binds.extend([
-        (key("pin_neighbour"), "Match a side, else " + commit_label.lower()),
-        (key("pin_source"), "Match the CAD edge"),
-    ])
+    binds.append((key("pin_neighbour"), "Match a side, else " + commit_label.lower()))
     # Every way of committing, not just the first: right-click and Enter are
     # both worth knowing (the right-click is the Plasticity-style affordance
     # people arrive expecting), and this is the one action where the second
@@ -874,6 +871,107 @@ def _draw_vertex_dots(
     gpu.state.blend_set('NONE')
 
 
+# ---------------------------------------------------------------------------
+#  The mirror's axis picker
+# ---------------------------------------------------------------------------
+# Alt+X arms `RETOP_OT_mirror` and it then waits for X, Y or Z. That prompt
+# lived in the status bar alone, which is at the bottom of the *window* -- the
+# one place nobody is looking while their hand is on the keyboard and their eyes
+# are on the part. Hard Ops puts its axis choice under the cursor, and this is
+# the same idea: three keys, each showing whether that axis is mirrored right
+# now, drawn where the question was asked.
+#
+# It has its own handler rather than riding the session's, because the mirror is
+# a GLOBAL key: with `global_keys_outside_session` on it is armed with no
+# session running and no session overlay installed.
+MIRROR_AXES = ("X", "Y", "Z")
+MIRROR_BOX = 34          # side of one axis square, before UI scale
+MIRROR_GAP = 6
+MIRROR_PAD = 10
+MIRROR_BG = (0.10, 0.10, 0.11, 0.92)
+MIRROR_OFF = (0.22, 0.23, 0.25, 1.0)
+MIRROR_ON = (0.16, 0.55, 0.95, 1.0)
+MIRROR_LABEL_OFF = (0.78, 0.79, 0.81, 1.0)
+MIRROR_LABEL_ON = (1.0, 1.0, 1.0, 1.0)
+MIRROR_TITLE = (0.88, 0.89, 0.91, 1.0)
+
+_mirror_handle = None
+# (window x, window y) of the pointer, and which axes are on. Written by the
+# mirror operator; a draw handler has no event to read a cursor from and no
+# business reaching for a modifier on an object.
+mirror_cursor: "tuple[int, int] | None" = None
+mirror_state: tuple[bool, bool, bool] = (False, False, False)
+
+
+def _draw_mirror_gizmo() -> None:
+    """Three labelled squares under the cursor, one per axis, lit when on."""
+    if mirror_cursor is None:
+        return
+    region = bpy.context.region
+    if region is None or region.type != 'WINDOW':
+        return
+
+    # The panel's own overlay scale, read defensively: this handler can be
+    # installed with no session and the scene property is the only thing that
+    # says how big the user wants the addon's overlays.
+    state = getattr(bpy.context.scene, "plasticity_retop", None)
+    scale = max(0.5, getattr(state, "overlay_scale", 1.0))
+    box = MIRROR_BOX * scale
+    gap = MIRROR_GAP * scale
+    pad = MIRROR_PAD * scale
+
+    font_id = 0
+    _set_font_size(font_id, FONT_SIZE * scale)
+    title = "Mirror"
+    title_w, title_h = blf.dimensions(font_id, title)
+
+    width = 3 * box + 2 * gap + 2 * pad
+    height = box + title_h + 3 * pad
+
+    x = mirror_cursor[0] - region.x - width * 0.5
+    y = mirror_cursor[1] - region.y + TOOLTIP_OFFSET * scale
+    x = min(max(0.0, x), max(0.0, region.width - width))
+    y = min(max(0.0, y), max(0.0, region.height - height))
+
+    _draw_filled_rect(x, y, width, height, MIRROR_BG)
+
+    blf.color(font_id, *MIRROR_TITLE)
+    blf.position(font_id, x + pad, y + height - pad - title_h, 0)
+    blf.draw(font_id, title)
+
+    for i, axis in enumerate(MIRROR_AXES):
+        on = bool(mirror_state[i]) if i < len(mirror_state) else False
+        bx = x + pad + i * (box + gap)
+        by = y + pad
+        _draw_filled_rect(bx, by, box, box, MIRROR_ON if on else MIRROR_OFF)
+        label_w, label_h = blf.dimensions(font_id, axis)
+        blf.color(font_id, *(MIRROR_LABEL_ON if on else MIRROR_LABEL_OFF))
+        blf.position(font_id, bx + (box - label_w) * 0.5,
+                     by + (box - label_h) * 0.5, 0)
+        blf.draw(font_id, axis)
+
+
+def enable_mirror_gizmo() -> None:
+    global _mirror_handle
+    if _mirror_handle is None:
+        _mirror_handle = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_mirror_gizmo, (), 'WINDOW', 'POST_PIXEL')
+
+
+def disable_mirror_gizmo() -> None:
+    """Drop the handler *and* the state it draws from.
+
+    Every exit path of the mirror modal calls this -- an axis pressed, Esc, a
+    click, a key that isn't an axis -- because a draw handler nobody owns is
+    the one kind of leak the version string cannot report.
+    """
+    global _mirror_handle, mirror_cursor
+    mirror_cursor = None
+    if _mirror_handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_mirror_handle, 'WINDOW')
+        _mirror_handle = None
+
+
 def enable() -> None:
     global _handle, _points_handle
     if _handle is None:
@@ -886,6 +984,7 @@ def enable() -> None:
 
 def disable() -> None:
     global _handle, _points_handle
+    disable_mirror_gizmo()
     if _handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_handle, 'WINDOW')
         _handle = None

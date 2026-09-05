@@ -209,7 +209,7 @@ check("and discarding puts them back",
 state.session_phase = 'PATCH'
 patch_keys = [k for k, _a in pr.overlay.keybinds_for(state)]
 check("Alt+X is advertised as the mirror", "Alt+X" in patch_keys, patch_keys)
-check("the x-ray moved to Shift+X", "Shift+X" in patch_keys, patch_keys)
+check("the x-ray moved to V", "V" in patch_keys, patch_keys)
 check("Alt+X is no longer the x-ray",
       all(a != "Retopo X-Ray" for k, a in pr.overlay.keybinds_for(state)
           if k == "Alt+X"),

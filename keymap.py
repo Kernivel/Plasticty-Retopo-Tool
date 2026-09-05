@@ -40,7 +40,7 @@ Two things stay outside all of this:
   keymap has no notion of.
 
 The left click is *half* outside. Taking the side under the cursor is a normal
-binding (`pin_neighbour`, `pin_source`); what stays in the modal is the
+binding (`pin_neighbour`); what stays in the modal is the
 fallback when there is no side under the cursor, which commits — that one
 genuinely depends on the hover, and the modal hands the event over whenever it
 doesn't apply.
@@ -68,13 +68,19 @@ ACTIONS: tuple[tuple[str, str, str, str, dict[str, object], list[dict[str, objec
     ("span_axis", "U / V direction", SESSION, "retop.toggle_span_axis", {}, [_b('TAB')]),
     ("ngon_mode", "N-gon mode", SESSION, "retop.toggle_ngon", {}, [_b('N')]),
     ("match_mode", "Side highlight", SESSION, "retop.toggle_match_mode", {}, [_b('M')]),
-    # Both clicks, not just the Ctrl one: the *fallback* when no side is under
-    # the cursor is the modal's (it commits), but taking the side is an action
-    # like any other and there was never a reason for it to be fixed.
-    ("pin_neighbour", "Match side to neighbour", SESSION, "retop.pin_side",
+    # Taking the side under the cursor is an action like any other, and there
+    # was never a reason for it to be fixed in the modal -- only the *fallback*
+    # (nothing under the cursor, so commit) genuinely depends on the hover.
+    #
+    # One click, not two. `Ctrl`+click used to force the side's own CAD
+    # tessellation, and it was redundant: `adopt_side_reference` already falls
+    # back to the CAD edge whenever the side has no committed neighbour, which
+    # is every case anyone reached for it in. What the second gesture actually
+    # offered was overriding a neighbour that *is* there -- keeping the CAD
+    # density instead of welding -- and that is not worth a modifier on the
+    # one click the picker has.
+    ("pin_neighbour", "Match side", SESSION, "retop.pin_side",
      {"source": False}, [_b('LEFTMOUSE')]),
-    ("pin_source", "Match side to CAD edge", SESSION, "retop.pin_side",
-     {"source": True}, [_b('LEFTMOUSE', ctrl=True)]),
     ("delete_patch", "Delete patch", SESSION, "retop.delete_patch", {}, [_b('X')]),
     ("commit", "Commit patch", SESSION, "retop.commit_patch", {},
      [_b('RET'), _b('NUMPAD_ENTER'), _b('RIGHTMOUSE')]),
@@ -87,8 +93,16 @@ ACTIONS: tuple[tuple[str, str, str, str, dict[str, object], list[dict[str, objec
     ("local_view", "Isolate", GLOBAL, "retop.local_view", {},
      [_b('SLASH'), _b('NUMPAD_SLASH')]),
     ("mirror", "Mirror", GLOBAL, "retop.mirror", {}, [_b('X', alt=True)]),
+    # `V`, not `Shift+X`. The mirror's `Alt+X` is the Hard Ops reflex and stays,
+    # but hanging the x-ray off the same letter put it next to two things
+    # Blender and this addon both claim `X` for -- and in practice the press
+    # came out as `object.delete`'s confirmation popup rather than the toggle.
+    # `V` is unbound in Object Mode and is where a user reaches for a
+    # visibility toggle anyway. A binding the user has already changed is
+    # theirs and is not overwritten: Blender keeps edited items in the
+    # preferences, so this default only reaches a fresh install or a Restore.
     ("see_through", "Retopo X-ray", GLOBAL, "retop.toggle_see_through", {},
-     [_b('X', shift=True)]),
+     [_b('V')]),
 )
 
 ACTION_IDS = tuple(entry[0] for entry in ACTIONS)
@@ -104,7 +118,10 @@ _registered: dict[str, list[bpy.types.KeyMapItem]] = {}
 # be unhelpful; anything else falls back to the name with its underscores
 # turned into spaces, which covers the letters and the F-keys.
 KEY_LABELS = {
-    'RET': "Enter", 'NUMPAD_ENTER': "Enter (num)", 'ESC': "Esc",
+    # Both Enters read "Enter": which of the two keyboards it is under is not
+    # something a hint has any reason to say, and `describe_all` de-duplicates
+    # so the commit hint lists "Enter / R-Click" rather than Enter twice.
+    'RET': "Enter", 'NUMPAD_ENTER': "Enter", 'ESC': "Esc",
     'BACK_SPACE': "Backspace", 'TAB': "Tab", 'SPACE': "Space",
     'LEFTMOUSE': "Click", 'RIGHTMOUSE': "R-Click", 'MIDDLEMOUSE': "M-Click",
     'WHEELUPMOUSE': "Wheel Up", 'WHEELDOWNMOUSE': "Wheel Down",
@@ -308,11 +325,16 @@ def describe(action_id: str) -> str:
 
 
 def describe_all(action_id: str) -> list[str]:
-    """Every binding of an action, for the one hint that lists them."""
+    """Every binding of an action, for the one hint that lists them.
+
+    De-duplicated by what it *reads as*, not by which item it came from: the
+    two Enters are one key as far as anyone reading a hint is concerned, and
+    "Enter / Enter / R-Click" says nothing the shorter form doesn't.
+    """
     items = items_for(action_id)
-    if items:
-        return [describe_item(kmi) for kmi in items]
-    return [describe_binding(b) for b in default_bindings(action_id)]
+    described = ([describe_item(kmi) for kmi in items] if items
+                 else [describe_binding(b) for b in default_bindings(action_id)])
+    return list(dict.fromkeys(described))
 
 
 def preferences() -> object | None:
@@ -334,7 +356,7 @@ def global_keys_outside_session() -> bool:
     """Whether the GLOBAL keys mean anything with no session running.
 
     Off by default, and that default is what the GLOBAL/SESSION split costs
-    otherwise: '/' , `Alt+X` and `Shift+X` are keys other addons bind too --
+    otherwise: '/' , `Alt+X` and `V` are keys other addons bind too --
     Hard Ops above all, whose own `Alt+X` this one was modelled on -- and an
     addon that claims them from the moment it is installed is one that has to
     be *disabled* to get them back. A session running is the addon being used;

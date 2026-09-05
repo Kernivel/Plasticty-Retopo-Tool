@@ -262,10 +262,11 @@ state.result_see_through = True
 
 bindings = [(kmi.type, kmi.alt, kmi.shift, kmi.idname)
             for _km, kmi in pr.operators._addon_keymaps]
-# Shift+X, not Alt+X: Alt+X is the mirror, borrowed from Hard Ops because that
-# is the reflex, and symmetry is reached for far more often than the x-ray.
-check("the retopo x-ray is on Shift+X",
-      ('X', False, True, "retop.toggle_see_through") in bindings, bindings)
+# `V`, and no flavour of `X` at all: Alt+X is the mirror (the Hard Ops reflex)
+# and a bare X deletes a patch, so a third meaning on the same letter is what
+# made Shift+X come out as `object.delete`'s confirmation popup.
+check("the retopo x-ray is on V",
+      ('V', False, False, "retop.toggle_see_through") in bindings, bindings)
 check("and Alt+X is the mirror",
       ('X', True, False, "retop.mirror") in bindings, bindings)
 # Still true, and for the same reason as before: Alt+Z is Blender's own

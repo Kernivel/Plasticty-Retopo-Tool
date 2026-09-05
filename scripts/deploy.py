@@ -20,9 +20,14 @@ ADDON_NAME = os.path.basename(ADDON_DIR)
 # alike, since shutil.copytree's ignore callback is handed both. The docs
 # site lives in this repo (see docs/), and a Blender addon has no use for it.
 SKIP_DIRS = {
-    "__pycache__", ".git", ".github", ".idea", ".junie",
+    "__pycache__", ".git", ".github", ".gitignore", ".idea", ".junie",
     "tests", "scripts",
     "docs", "site", "mkdocs.yml", "requirements-docs.txt",
+    # Release zips, written by scripts/build_zip.py. Shipping a copy of the
+    # addon *inside* the addon is the kind of thing nobody notices until the
+    # download is twice the size it should be -- and the builder walks this
+    # same list while the zip it is writing already exists on disk.
+    "dist",
 }
 
 

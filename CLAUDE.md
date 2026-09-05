@@ -25,6 +25,9 @@ blender YourFile.blend --background --factory-startup --python scripts/diagnose_
 # regenerate the two documents derived from that fixture
 blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/gen_results.py       # RESULTS.md
 blender tests/fixtures/TestCases.blend --background --factory-startup --python scripts/gen_expectations.py  # the EXPECTED table
+
+python scripts/build_zip.py          # dist/<name>-<version>.zip, what a release ships
+python scripts/build_zip.py --check  # only verify the two version literals agree
 ```
 
 **`--factory-startup` is not optional on those five**, however harmless a
@@ -67,6 +70,33 @@ After deploying, use the panel's **Reload Addon Only** button — plain
 "Reload Scripts" can silently half-fail when another installed addon errors
 during its own reload. A reload that leaves a module stale is the one failure
 the version string cannot report; see the reload invariant below.
+
+**Those buttons are behind `prefs.developer_mode`, off by default**, and so is
+the red stale-load warning. Neither means anything to someone who installed the
+addon from a release zip: there is one copy of the code, nothing writes over it
+between reloads, and the way to get new code is to install the new zip. Left on
+for everyone, a pair of reload buttons reads as a fix-it button for any
+misbehaviour, which is exactly what it is not. `prefs.developer_mode()` reads
+through `keymap.preferences()`, which returns None outside an installed addon —
+the tests and `--background` — so it is off there too and nothing headless can
+come to depend on a user setting.
+
+**A release is a zip, and `scripts/build_zip.py` builds it.** One top-level
+folder named after the package, with the addon inside: Blender installs a zip
+by extracting it into the addons folder, so files at the root scatter loose
+among every other addon and `from . import keymap` has no package to be
+relative to. It excludes exactly what `deploy.py` excludes, *importing* that
+list rather than restating it — two copies would disagree the first time a
+directory was added, and a release quietly carrying the test suite, the fixture
+`.blend` and the built docs site is not something anyone would notice.
+`.github/workflows/release.yml` runs it on a `v*` tag and attaches the result.
+
+**`bl_info["version"]` and `version.ADDON_VERSION` are two literals in two
+files and they drift.** bl_info sat at `0.1.0` while the panel said `0.56.0`;
+Blender parses bl_info as *source*, before any of this code runs, so nothing
+can derive one from the other. `build_zip.py --check` refuses to build when
+they disagree, and the release workflow also checks the tag names the same
+number — a mislabelled asset is worse than a failed build.
 
 Bump `version.py` (`ADDON_VERSION` / `BUILD_ID`) on every change: the panel
 shows it, and it's the only reliable way to confirm a reload actually took.
@@ -690,7 +720,7 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   crashed modal leaves `session_active` set with nothing listening;
   `operators.session_is_running()` detects it and the panel offers a reset.
 - **`show_in_front` is a setting, not a consequence of the session.**
-  `result_see_through` (Shift+X, `RETOP_OT_toggle_see_through`) decides whether
+  `result_see_through` (V, `RETOP_OT_toggle_see_through`) decides whether
   the retopology draws over the rest of the scene or is occluded like any other
   object — and turning it *off* is the only way to check the result sits on the
   surface rather than floating off it, which is something you want mid-session.
@@ -718,7 +748,7 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   stipple — and only by a fraction of an offset that is itself 0.1% of the
   model, so the seam still reads as flush. `refresh_result_appearance` ends
   by refreshing the preview for the same reason, and `show_in_front` on the
-  preview follows `result_see_through` (Shift+X) rather than being pinned on:
+  preview follows `result_see_through` (V) rather than being pinned on:
   checking the retopology against the surface has to include the patch being
   built. The one thing that *does* override it is a hand-edit: for the length
   of the `TWEAK` trip the result draws in front (`tweak_draw_in_front`, on by
@@ -1030,11 +1060,17 @@ side alone" and `_match_candidates` honours it over the automatic pass, making
 the gesture a plain two-state toggle. Clicking an excluded side matches it
 again.
 
-**Three kinds of pin.** `PIN_NEIGHBOUR` follows the committed patch across the
-side. `PIN_SOURCE` (Ctrl+click) follows the side's **own CAD tessellation**,
-thinned by curvature with the same rule n-gon mode uses — no neighbour needed,
-so it works on the first patch of a model and on any side facing nothing yet.
-`PIN_EXCLUDED` is the third, above. `state.side_overrides` stores the *kind*,
+**Three kinds of pin, but only one gesture.** `PIN_NEIGHBOUR` follows the
+committed patch across the side. `PIN_SOURCE` follows the side's **own CAD
+tessellation**, thinned by curvature with the same rule n-gon mode uses — no
+neighbour needed, so it works on the first patch of a model and on any side
+facing nothing yet. `PIN_EXCLUDED` is the third, above.
+`PIN_SOURCE` had its own `Ctrl`+click for a while and it was redundant:
+`adopt_side_reference` already falls back to it whenever the side has no
+committed neighbour, which is every case anyone reached for the modifier in.
+What the second gesture actually offered was *overriding* a neighbour that is
+there — keeping the CAD density instead of welding — and that is not worth a
+modifier on the one click the picker has. One click, two states. `state.side_overrides` stores the *kind*,
 not the count: the count is recomputed from live geometry every regeneration,
 so a stored copy could only disagree.
 
@@ -1196,7 +1232,7 @@ reported, so `Tab` can never leak mid-session.
 
 **No key of the addon's is live outside a session.** The session's keys never
 were — every one of those operators polls `session_active` — but the three
-`GLOBAL` ones (`/`, `Alt+X`, `Shift+X`) were claimed from the moment the addon
+`GLOBAL` ones (`/`, `Alt+X`, `V`) were claimed from the moment the addon
 was installed, and all three are keys something else wants: Hard Ops binds
 `Alt+X`, and `/` is Blender's own isolate. An addon that has to be *disabled*
 to give a key back is not self-contained, so `operators._global_keys_live`
@@ -1268,9 +1304,25 @@ leaves a new function object) nor orphans keymap items (the unregister happens
 ## Symmetry (`mesh_build`, `RETOP_OT_mirror`)
 
 `Alt+X` then `X`/`Y`/`Z` mirrors the retopology — the Hard Ops reflex, which is
-why the retopo x-ray moved to `Shift+X`. **Not `Alt+Z`**: that is Blender's own
+why the retopo x-ray moved off `X` altogether, to `V`. **Not `Alt+Z`**: that is Blender's own
 viewport X-ray, and the note under `result_see_through` about not taking it
-over still stands.
+over still stands. `Shift+X` was the x-ray's key until it turned out that in
+practice the press came out as `object.delete`'s confirmation popup — with two
+of the addon's own meanings already hanging off `X` (the mirror's `Alt+X`, the
+patch delete's bare `X`), a third was one too many.
+
+**The axis prompt draws a gizmo under the cursor**, not only a status-bar line.
+The status bar is at the bottom of the *window*: with a hand on the keyboard
+and eyes on the part, it is the one place nobody is looking. Three squares
+labelled X / Y / Z, lit for the axes already mirrored — which the key alone
+cannot say, since that state lives on the modifier rather than in the scene.
+It has **its own draw handler** (`overlay.enable_mirror_gizmo`) rather than
+riding the session's, because the mirror is a `GLOBAL` key: with
+`global_keys_outside_session` on it is armed with no session running and no
+session overlay installed. Every exit path of the modal goes through
+`RETOP_OT_mirror._finish`, and `overlay.disable()` drops it too — a draw
+handler nobody owns is the one kind of leak the version string cannot report,
+and `tests/test_overlay.py` pins both ends.
 
 **It is a Mirror modifier on the result object, never baked geometry**, and
 that is not merely non-destructiveness. Every piece of bookkeeping here reads
@@ -1481,8 +1533,8 @@ committed patch to change its spans (replaces it in place).
 
 Also implemented: matching a committed neighbour along a shared side, by
 pointing at it (`M`) or automatically, for every generator and confined to the
-faces the side actually borders; pinning a side to its own CAD tessellation
-(`Ctrl`+click); corner ranking, which keeps a quad a quad when the angle test
+faces the side actually borders; falling back to a side's own CAD
+tessellation when nothing borders it; corner ranking, which keeps a quad a quad when the angle test
 also flags a tessellated curve; the Plasticity edge / B-rep vertex / surface
 flow overlay (`E`, `Ctrl`+`E`); the hand-edit round trip into Blender's Edit
 Mode (`Tab` from `PATCH`), set up for retopology and repaired on the way back;

@@ -12,3 +12,7 @@ tests/fixtures/plasticity/
 
 # MkDocs build output (docs/ is the source, site/ is generated).
 site/
+
+# Release zips (scripts/build_zip.py). Built from a tag, attached to the
+# GitHub release; never committed.
+dist/

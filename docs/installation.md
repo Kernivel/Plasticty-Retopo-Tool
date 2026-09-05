@@ -20,6 +20,23 @@ connection, no Plasticity install, no bridge.
 
 ## Installing the addon
 
+Download the `.zip` from the
+[latest release](https://github.com/Kernivel/Plasticty-Retopo-Tool/releases)
+and **drag it into Blender**, or use `Edit > Preferences > Add-ons >
+Install from Disk`. Then enable **Plasticity Retop** in the add-ons list.
+
+To update, install the newer zip over it. There is nothing else to do and no
+reload to remember: Blender replaces the installed copy and re-imports it.
+
+!!! tip "The rest of this page is for working *on* the addon"
+
+    Installing from a release zip is the whole story for using it. Everything
+    below — deploying from a checkout, the reload buttons, the version string —
+    is the development loop, and the reload buttons are hidden until you turn on
+    **Developer Mode** in the addon's preferences.
+
+## Working from a checkout
+
 ```bash
 git clone https://github.com/Kernivel/Plasticty-Retopo-Tool.git
 cd Plasticty-Retopo-Tool
@@ -61,7 +78,12 @@ After deploying, use the panel's **Reload Addon Only** button rather than
 Blender's global *Reload Scripts*: the latter can quietly half-fail when another
 installed addon errors during its own reload.
 
-## Updating
+**Both buttons, and the red stale-code warning, are behind Developer Mode** —
+`Preferences > Add-ons > Plasticity Retop > Developer Mode`, off by default.
+Installed from a release zip there is nothing to reload against: one copy of the
+code, replaced when you install the next zip.
+
+## Updating a checkout
 
 ```bash
 git pull
@@ -70,3 +92,18 @@ python scripts/deploy.py
 
 Then **Reload Addon Only**, and check the version string. Your settings survive a
 reload — Blender stores them on the scene, keyed by name.
+
+## Building a release zip
+
+```bash
+python scripts/build_zip.py          # dist/<name>-<version>.zip
+python scripts/build_zip.py --check  # verify only, write nothing
+```
+
+The zip holds one top-level folder with the addon inside — the shape Blender's
+installer expects — and excludes exactly what `deploy.py` excludes. It refuses to
+build when `bl_info["version"]` and `version.py` disagree, because those are the
+two numbers Blender's add-on list and the N-panel each show.
+
+Pushing a `v<version>` tag runs `.github/workflows/release.yml`, which builds the
+same zip and attaches it to the GitHub release.

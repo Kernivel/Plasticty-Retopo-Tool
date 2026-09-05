@@ -6,7 +6,14 @@ Plasticity ↔ Blender bridge.
 **📖 [Documentation](https://kernivel.github.io/Plasticty-Retopo-Tool/)** — built from
 `docs/` by `.github/workflows/docs.yml`. Nothing in `docs/` ships with the addon.
 
-## Setting up on a new machine
+## Installing
+
+Blender 4.2 or newer (developed against 5.1). Download the `.zip` from the
+[latest release](https://github.com/Kernivel/Plasticty-Retopo-Tool/releases),
+drag it into Blender — or `Edit > Preferences > Add-ons > Install from Disk` —
+and enable *Plasticity Retop*. Updating means installing the newer zip over it.
+
+## Setting up to work on it
 
 1. **Install Blender** (4.2+; developed against 5.1).
 2. **Get this folder** onto the machine (git clone, or copy the directory).
@@ -14,12 +21,18 @@ Plasticity ↔ Blender bridge.
    ```bash
    python scripts/deploy.py
    ```
-   Then enable *Plasticity Retop* in `Preferences > Add-ons`.
+   Then enable *Plasticity Retop* in `Preferences > Add-ons`, and turn on
+   **Developer Mode** in its preferences — that is what shows the panel's
+   reload buttons and its stale-code warning.
 4. **Check everything works:**
    ```bash
    python scripts/run_tests.py
    ```
    This needs Blender only — no Plasticity, no bridge.
+5. **Build a release zip** when you want one:
+   ```bash
+   python scripts/build_zip.py
+   ```
 
 To actually retopologize your own models you additionally need Plasticity and
 the [plasticity-blender-addon](https://github.com/nkallen/plasticity-blender-addon)

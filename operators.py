@@ -1377,13 +1377,13 @@ class RETOP_OT_session(bpy.types.Operator):
             #
             # Only the *fallback* is hover-dependent, and only it stays here.
             # Taking the side is `retop.pin_side`, a normal binding resolved
-            # like every other -- which is what makes both the plain and the
-            # Ctrl click remappable. They were fixed only because they had been
-            # lumped in with a fallback they never shared.
+            # like every other -- which is what makes the click remappable. It
+            # was fixed only because it had been lumped in with a fallback it
+            # never shared.
             if state.hovered_side == -1:
                 return None
             bound = keymap.session_action_for(event)
-            if bound in {"pin_neighbour", "pin_source"}:
+            if bound == "pin_neighbour":
                 self._run_bound_action(context, bound)
                 return {'RUNNING_MODAL'}
             return None
@@ -2146,7 +2146,7 @@ def _global_keys_live(context: bpy.types.Context) -> bool:
 
     They are dispatched by Blender rather than by the modal, so unlike the
     session's keys they are offered on every press from the moment the addon is
-    installed -- and '/' , Alt+X and Shift+X are keys other addons want too
+    installed -- and '/' , Alt+X and V are keys other addons want too
     (Hard Ops' own Alt+X is where this one's was borrowed from). Claiming a key
     an addon is not currently being used for is how an addon ends up having to
     be disabled to get its keys back, so by default these polls fail with no
@@ -2205,6 +2205,20 @@ class RETOP_OT_mirror_axis(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _tag_viewports_redraw(context: bpy.types.Context) -> None:
+    """Redraw every 3D view, so a POST_PIXEL overlay follows the pointer.
+
+    Every viewport rather than `context.area`: a modal's context area is
+    whichever one the operator was invoked from, and the gizmo is drawn in
+    whichever region the pointer is actually over.
+    """
+    window = getattr(context, "window", None)
+    screen = getattr(window, "screen", None) if window else None
+    for area in (screen.areas if screen else ()):
+        if area.type == 'VIEW_3D':
+            area.tag_redraw()
+
+
 class RETOP_OT_mirror(bpy.types.Operator):
     """Alt+X, then X / Y / Z: arm the axis prompt and toggle what it picks.
 
@@ -2257,6 +2271,15 @@ class RETOP_OT_mirror(bpy.types.Operator):
             context.workspace.status_text_set(
                 f"Mirror {result.name}   |   X / Y / Z: toggle an axis   |   Esc: cancel"
                 + (f"   |   now: {' + '.join(on)}" if on else "   |   now: off"))
+        # And under the cursor as well, where the question was asked. The status
+        # bar is at the bottom of the window: with a hand on the keyboard and
+        # eyes on the part, it is the one place nobody looks. The gizmo also
+        # says which axes are *already* mirrored, which the key alone cannot --
+        # that state lives on the modifier.
+        overlay.mirror_state = tuple(axes)
+        overlay.mirror_cursor = (event.mouse_x, event.mouse_y)
+        overlay.enable_mirror_gizmo()
+        _tag_viewports_redraw(context)
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
@@ -2264,24 +2287,37 @@ class RETOP_OT_mirror(bpy.types.Operator):
         # Alt is still held from the binding that got us here, so its release
         # arrives first; the same goes for any other modifier the user lets go
         # of. Cancelling on those would make the prompt impossible to reach.
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            # The gizmo follows the pointer: it is drawn where the question is
+            # being asked, and a picker that stays behind reads as stale UI.
+            overlay.mirror_cursor = (event.mouse_x, event.mouse_y)
+            _tag_viewports_redraw(context)
+            return {'RUNNING_MODAL'}
         if event.value != 'PRESS' or event.type in {
-                'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'TIMER',
+                'TIMER',
                 'LEFT_ALT', 'RIGHT_ALT', 'LEFT_SHIFT', 'RIGHT_SHIFT',
                 'LEFT_CTRL', 'RIGHT_CTRL', 'OSKEY'}:
             return {'RUNNING_MODAL'}
 
         if event.type in mesh_build.MIRROR_AXES:
             axis = event.type
-            self._restore_status(context)
+            self._finish(context)
             bpy.ops.retop.mirror_axis(axis=axis)
             return {'FINISHED'}
 
         # Anything else cancels rather than being swallowed: an armed prompt
         # nobody can get out of is worse than one that gives up easily.
-        self._restore_status(context)
+        self._finish(context)
         if event.type not in {'ESC', 'RIGHTMOUSE'}:
             self.report({'INFO'}, "Mirror cancelled — X, Y or Z picks an axis")
         return {'CANCELLED'}
+
+    def _finish(self, context: bpy.types.Context) -> None:
+        """Every exit goes through here: a draw handler nobody owns is the one
+        kind of leak the version string cannot report."""
+        overlay.disable_mirror_gizmo()
+        _tag_viewports_redraw(context)
+        self._restore_status(context)
 
 
 class RETOP_OT_apply_mirror(bpy.types.Operator):
@@ -2861,7 +2897,7 @@ def _register_keymaps() -> None:
     skipped and the key belongs to Blender and to other addons again. Alt+X is the
     mirror, as in Hard Ops -- the reflex the key is borrowed from, and symmetry
     is reached for far more often than the x-ray, which is why the x-ray sits
-    on Shift+X. *Not* Alt+Z: that is Blender's own viewport X-ray and taking it
+    on V. *Not* Alt+Z: that is Blender's own viewport X-ray and taking it
     over cost more than it gave, and it is a different question anyway.
     """
     _unregister_keymaps()
