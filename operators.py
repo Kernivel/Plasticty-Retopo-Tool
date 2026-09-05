@@ -2320,6 +2320,30 @@ class RETOP_OT_mirror(bpy.types.Operator):
         self._restore_status(context)
 
 
+class RETOP_OT_reset_corner_methods(bpy.types.Operator):
+    """Put both corner-detection methods back on their defaults.
+
+    The two enums are a developer's knob (see the panel), so the rows that edit
+    them are hidden unless Developer Mode is on -- but the values live on the
+    scene, so a file saved with a non-default would otherwise be stuck on it
+    with no control anywhere to reach. This is the way back, and the panel only
+    offers it when there is something to undo.
+    """
+    bl_idname = "retop.reset_corner_methods"
+    bl_label = "Reset Corner Detection"
+    bl_description = ("Put corner detection back to Angle for grid generators and Both for n-gon "
+                      "mode -- the defaults, which are what the fixture measures as the better "
+                      "answer on every shape where the choice makes any difference at all")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        state = context.scene.plasticity_retop
+        state.corner_method_spans = 'ANGLE'
+        state.corner_method_ngon = 'BOTH'
+        self.report({'INFO'}, "Corner detection: Angle for grids, Both for n-gons")
+        return {'FINISHED'}
+
+
 class RETOP_OT_apply_mirror(bpy.types.Operator):
     """Bake the mirror into real geometry, mirrored faces left untracked."""
     bl_idname = "retop.apply_mirror"
@@ -2868,6 +2892,7 @@ CLASSES = (
     RETOP_OT_toggle_surface_flow,
     RETOP_OT_back,
     RETOP_OT_open_keymap_prefs,
+    RETOP_OT_reset_corner_methods,
     RETOP_OT_reload_addon,
 )
 

@@ -16,8 +16,8 @@ Corner detection, density, and boundary welding.
 |---|---|---|
 | **Resolution** | Mid | Scales the span count a new patch starts at: Very Low ¼ · Low ½ · Mid 1 · High 2 · Extreme 4. Only the starting point — a neighbour's span still wins |
 | **Span U / V / Span** | 4 | The live density of the open patch |
-| **Corners (Grid)** | Angle | How a boundary is split into sides for the span generators. See [How it works](../guide/generators.md#where-corners-come-from) |
-| **Corners (N-gon)** | Both | The same question for [n-gon mode](../guide/ngon.md) |
+| **Corners (Grid)** | Angle | *Developer Mode only.* How a boundary is split into sides for the span generators. See [How it works](../guide/generators.md#where-corners-come-from) |
+| **Corners (N-gon)** | Both | *Developer Mode only.* The same question for [n-gon mode](../guide/ngon.md) |
 | **Corner Angle Threshold** | 135° | Boundary turns sharper than this are corners |
 | **Small Side Tolerance** | 0 | Merge a side shorter than this into the next one, so a tessellation sliver does not cost a whole extra side. 0 = never |
 | **Reproject** | on | Snap interior grid vertices onto the CAD surface |

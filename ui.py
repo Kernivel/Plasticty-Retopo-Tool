@@ -396,16 +396,34 @@ def _draw_patch_settings(
     body.row(align=True).prop(state, "resolution", expand=True)
     body.separator()
     body.label(text="Corner Detection")
-    col = body.column(align=True)
-    col.label(text="Grid generators:")
-    col.row(align=True).prop(state, "corner_method_spans", expand=True)
-    col.separator()
-    col.label(text="N-gon mode:")
-    col.row(align=True).prop(state, "corner_method_ngon", expand=True)
-    sub_angle = body.column()
-    sub_angle.enabled = 'ANGLE' in (state.corner_method_spans, state.corner_method_ngon) \
-        or 'BOTH' in (state.corner_method_spans, state.corner_method_ngon)
-    sub_angle.prop(state, "corner_angle_threshold")
+    # Which *test* finds the corners is not a choice anyone has a signal to
+    # make, so it is a developer's knob rather than a setting. Measured across
+    # the whole fixture at MID: the method changes the result on two objects
+    # out of sixteen in either mode, and on those two the shipped default is
+    # the better one -- for grids, Angle keeps Cube Bevel Edges at 0.221%
+    # deviation where the others fan two of its faces into N-Sides and take it
+    # to 0.838%; for n-gons, Both closes all 91 of Carved Rounded Slot's open
+    # edges that Angle leaves. And Both and Topology are *indistinguishable* on
+    # every object of the fixture in both modes -- three values, two outcomes,
+    # and each mode already ships with the right one.
+    if prefs.developer_mode():
+        col = body.column(align=True)
+        col.label(text="Grid generators:")
+        col.row(align=True).prop(state, "corner_method_spans", expand=True)
+        col.separator()
+        col.label(text="N-gon mode:")
+        col.row(align=True).prop(state, "corner_method_ngon", expand=True)
+    elif (state.corner_method_spans != 'ANGLE'
+            or state.corner_method_ngon != 'BOTH'):
+        # Hidden, but the value is stored on the scene: a file already carrying
+        # a non-default would otherwise be stuck on it with no control to reach.
+        warn = body.column(align=True)
+        warn.alert = True
+        warn.label(text="Corner detection is not on its defaults", icon='ERROR')
+        warn.operator("retop.reset_corner_methods", icon='LOOP_BACK')
+    # Always live: TOPOLOGY falls back to the angle test on a boundary with no
+    # junction, so the threshold means something whichever method is set.
+    body.prop(state, "corner_angle_threshold")
     body.prop(state, "small_side_tolerance")
     body.prop(state, "boundary_weld_distance")
 

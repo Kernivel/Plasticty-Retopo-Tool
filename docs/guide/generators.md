@@ -93,21 +93,39 @@ changes. That is a real B-rep vertex, at any angle — but a face whose whole
 boundary runs against one single neighbour has no junction at all, however square
 it looks.
 
-The **Corners** setting picks between them, and there are **two of them**, because
-the two modes want opposite things:
+Which test runs is set **per mode**, because the two modes want opposite things:
 
-**Corners (Grid)** — default *Angle*. A grid's side count *chooses the
-generator*, so every extra corner is an extra side. Turn topology on and a
-bevel — whose long side borders face after face — goes from a Quad with a clean
-grid to an N-Side with a pole in the middle of it.
+**Grid generators** use *Angle*. A grid's side count *chooses the generator*, so
+every extra corner is an extra side. Turn topology on and a bevel — whose long
+side borders face after face — goes from a Quad with a clean grid to an N-Side
+with a pole in the middle of it.
 
-**Corners (N-gon)** — default *Both*. An n-gon only *follows* its boundary, so
-extra corners cost it nothing, and they are the one thing that keeps a shallow
-chamfer the angle test cannot see.
+**N-gon mode** uses *Both*. An n-gon only *follows* its boundary, so extra
+corners cost it nothing, and they are the one thing that keeps a shallow chamfer
+the angle test cannot see.
 
 *Topology* falls back to the angle test on a boundary that yields no junction: a
 patch with no corners is one single side, which every span generator would read
 as unusable.
+
+!!! info "You do not choose this — the rows are behind Developer Mode"
+
+    It is not a setting anyone has a signal to act on, and that is measured
+    rather than asserted. Across the whole fixture at Mid resolution the method
+    changes the result on **two objects out of sixteen** in either mode, and on
+    those two the shipped default is the better one:
+
+    | | Angle | Both / Topology |
+    |---|--:|--:|
+    | Cube Bevel Edges, *grid* | **0.221%**, 9 Quad + 2 Triangle + 2 Wedge | 0.838%, two faces fanned into N-Sides |
+    | Carved Rounded Slot, *n-gon* | 96v/36f, **91 open edges** | **48v/28f, 0 open edges** |
+
+    Every other object is identical under all three. And *Both* and *Topology*
+    give byte-for-byte the same result on **every** object in **both** modes —
+    three values, two outcomes, and each mode already ships with the right one.
+
+    If a `.blend` saved before this was hidden still carries a non-default, the
+    settings tab says so and offers a **Reset Corner Detection** button.
 
 ## When there are too many corners
 

@@ -367,6 +367,22 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   the same polyline. `sides.corners_are_uniform` only **reports** it, into
   `state.corner_warning`, and the panel says to raise the threshold. Guessing
   would round a real octagon off half the time.
+  **Why the method is not a user-facing setting is measured, not assumed.**
+  Across the whole fixture at MID it changes the result on *two objects out of
+  sixteen* in either mode -- and on those two the shipped default is the better
+  one. For grids: `ANGLE` holds Cube Bevel Edges at 0.221% deviation with 9
+  Quad, 2 Triangle and 2 Wedge, where `BOTH`/`TOPOLOGY` fan two of those faces
+  into N-Sides and take it to 0.838%, and Cube Chamfer Edges gains a second
+  N-Side. For n-gons: `BOTH` closes all 91 of Carved Rounded Slot's open
+  boundary edges that `ANGLE` leaves (48v/28f against 96v/36f, same deviation)
+  and takes Cube Bevel Edges from 0.221%/62 open to 0.147%/52. Every other
+  object is identical under all three. And `BOTH` and `TOPOLOGY` are
+  **indistinguishable on every object of the fixture in both modes** -- three
+  values, two outcomes, and each mode already ships with the right one. There
+  is no situation the panel could describe in which changing it is the answer,
+  so the rows live behind `prefs.developer_mode`, with
+  `RETOP_OT_reset_corner_methods` as the way back for a file that stored a
+  non-default before they were hidden.
 - **One corner is worse than none.** `resolve_corners` used to hand back a
   single corner as-is: `split_into_sides` then returns one side, no generator
   accepts one, and the face is silently unpickable with no message anywhere.
