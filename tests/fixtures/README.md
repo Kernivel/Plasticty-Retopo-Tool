@@ -45,7 +45,7 @@ What makes a surprising result diagnosable a year from now.
 | | |
 |---|---|
 | Plasticity version | 26.1.3 |
-| Bridge addon version | _TODO_ |
+| Bridge addon version | 2.2.1 |
 | Blender that saved the `.blend` | 5.0.1 (`a3db93c5b259`) |
 | Added | 2026-08-25 |
 
