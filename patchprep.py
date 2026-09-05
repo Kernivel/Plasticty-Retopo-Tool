@@ -36,7 +36,7 @@ class PreparedPatch:
     """
 
     __slots__ = ("patch", "loops_sides", "loops_corner_ids", "num_loops",
-                 "loops_neighbours", "corner_warning")
+                 "loops_neighbours", "corner_warning", "loops_corners_arbitrary")
 
     def __init__(
         self,
@@ -46,7 +46,14 @@ class PreparedPatch:
         num_loops: int,
         loops_neighbours: list[list[list[int]]] | None = None,
         corner_warning: str = "",
+        loops_corners_arbitrary: list[bool] | None = None,
     ) -> None:
+        # Per loop: whether its corners are the four quarter points of a circle
+        # rather than anything the boundary actually states. Only that case is
+        # flagged -- see sides.synthesise_corners_detail. `sidematch` is
+        # allowed to cut such a loop somewhere else entirely, which is what
+        # lets a disc take the vertices of the ring committed around it.
+        self.loops_corners_arbitrary = list(loops_corners_arbitrary or [])
         # Why this patch's side count should not be trusted, or "". Set when
         # the angle test flagged *every* boundary vertex, which means the
         # threshold is doing nothing useful here -- see sides.corners_are_uniform.
@@ -109,10 +116,11 @@ def prepare_patch(
     loops_sides = []
     loops_corner_ids = []
     loops_neighbours = []
+    loops_arbitrary = []
     corner_warning = ""
     for loop in loops:
         segment_neighbours = neighbours_of_loop.get(id(loop))
-        corners = sides_mod.resolve_corners(
+        corners, arbitrary = sides_mod.resolve_corners_detail(
             loop, positions, angle_threshold=angle_threshold,
             neighbour_ids=segment_neighbours, method=corner_method,
             # Only a single-loop patch needs corners invented for it: that
@@ -121,6 +129,7 @@ def prepare_patch(
             # loops itself, so corners it never asked for only get in the
             # way -- see resolve_corners.
             allow_synthesis=(num_loops == 1))
+        loops_arbitrary.append(arbitrary)
         if not corner_warning and sides_mod.corners_are_uniform(
                 loop, positions, sides_mod.detect_corners(loop, positions, angle_threshold)):
             corner_warning = (f"every boundary vertex is a corner ({len(loop)}) -- "
@@ -134,7 +143,7 @@ def prepare_patch(
         loops_neighbours.append(side_neighbours(loop, side_indices, segment_neighbours))
 
     return PreparedPatch(patch, loops_sides, loops_corner_ids, num_loops,
-                         loops_neighbours, corner_warning)
+                         loops_neighbours, corner_warning, loops_arbitrary)
 
 
 def side_neighbours(

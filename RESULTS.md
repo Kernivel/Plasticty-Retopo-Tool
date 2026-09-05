@@ -12,7 +12,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 |---|---|
 | Generated | 2026-09-05 |
 | Blender | 5.1.1 |
-| Addon | 0.56.0 (2026-09-03-d) |
+| Addon | 0.57.0 (2026-09-05-a) |
 | Resolution | MID |
 | Fixture | `tests/fixtures/TestCases.blend`, 16 objects |
 
@@ -23,7 +23,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | Object | Source tris | CAD faces | Generators | Result | Deviation max | Open edges |
 |---|--:|--:|---|--:|--:|--:|
 | `Carved Rounded Slot` | 156 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 172v / 131f | 0.0690% | 90 |
-| `Cone` | 188 | 2 | 2&nbsp;Quad | 682v / 612f | 13.8728% | 140 |
+| `Cone` | 188 | 2 | 2&nbsp;Quad | 614v / 612f | 13.8606% | 0 |
 | `Cube Bevel Edges` | 1556 | 13 | 9&nbsp;Quad, 2&nbsp;Triangle, 2&nbsp;Wedge | 206v / 186f | 0.2215% | 76 |
 | `Cube Chamfer Edges` | 20 | 9 | 8&nbsp;Quad, 1&nbsp;N-Side | 34v / 31f | 0.0001% | 6 |
 | `Cylinder` | 320 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 1592v / 1590f | 0.0602% | 0 |
@@ -37,14 +37,14 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | `Square Plate Small Hole Far Away` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 16v / 14f | 0.0007% | 0 |
 | `Square Plate Small Hole Scaled Down` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 12v / 10f | 0.0661% | 0 |
 | `Torus` | 27126 | 1 | 1&nbsp;unusable | — | — | — |
-| `Truncated Cone` | 264 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 912v / 812f | 0.0807% | 200 |
+| `Truncated Cone` | 264 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 814v / 812f | 0.0807% | 0 |
 
 ## Deviation from the CAD surface
 
 | Object | mean | rms | p95 | max | vertex max |
 |---|--:|--:|--:|--:|--:|
 | `Carved Rounded Slot` | 0.0059% | 0.0161% | 0.0431% | **0.0690%** | 0.0007% |
-| `Cone` | 0.0626% | 0.4220% | 0.1725% | **13.8728%** | 0.0001% |
+| `Cone` | 0.0631% | 0.4245% | 0.1759% | **13.8606%** | 0.0000% |
 | `Cube Bevel Edges` | 0.0430% | 0.0566% | 0.1004% | **0.2215%** | 0.0000% |
 | `Cube Chamfer Edges` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
 | `Cylinder` | 0.0171% | 0.0247% | 0.0464% | **0.0602%** | 0.0006% |
@@ -65,7 +65,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | Object | Verts | Faces | Face sizes | Open edges | Non-manifold | Unwelded | Inward | Interior poles |
 |---|--:|--:|---|--:|--:|--:|--:|--:|
 | `Carved Rounded Slot` | 172 | 131 | 131&times;4-gon | 90 | 0 | 0 | 0 | 4 |
-| `Cone` | 682 | 612 | 612&times;4-gon | 140 | 0 | 0 | 0 | 0 |
+| `Cone` | 614 | 612 | 612&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 | `Cube Bevel Edges` | 206 | 186 | 20&times;3-gon, 166&times;4-gon | 76 | 0 | 0 | 0 | 1 |
 | `Cube Chamfer Edges` | 34 | 31 | 31&times;4-gon | 6 | 0 | 0 | 0 | 7 |
 | `Cylinder` | 1592 | 1590 | 1590&times;4-gon | 0 | 0 | 0 | 0 | 8 |
@@ -77,7 +77,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | `Square Plate Small Hole` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 | `Square Plate Small Hole Far Away` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 | `Square Plate Small Hole Scaled Down` | 12 | 10 | 10&times;4-gon | 0 | 0 | 0 | 0 | 8 |
-| `Truncated Cone` | 912 | 812 | 812&times;4-gon | 200 | 0 | 0 | 0 | 0 |
+| `Truncated Cone` | 814 | 812 | 812&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 
 **Non-manifold, unwelded and inward-facing are zero everywhere**, which is the set worth being strict about. "Inward" counts faces pointing the opposite way from the CAD surface under them -- a whole patch can turn over without changing any other number in this table, which is exactly what a matched rim leading a band once did. Open-edge counts are a worst case rather than a quality score: this run commits in the fixture's own face order, and auto-matching can only match an *already committed* neighbour, so a patch baked early can never weld to one baked later.
 
@@ -86,7 +86,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | Object | Aspect p50 | p95 | max | Skew p50 | p95 | max | Edge cv |
 |---|--:|--:|--:|--:|--:|--:|--:|
 | `Carved Rounded Slot` | 1.73 | 10.33 | **10.4** | 10.8° | 58.8° | 69.9° | 1.36 |
-| `Cone` | 1.12 | 2.74 | **10.5** | 30.8° | 68.2° | 84.5° | 0.60 |
+| `Cone` | 1.11 | 2.83 | **9.2** | 31.0° | 68.4° | 85.3° | 0.60 |
 | `Cube Bevel Edges` | 2.71 | 21.73 | **21.7** | 2.8° | 41.9° | 70.6° | 1.72 |
 | `Cube Chamfer Edges` | 1.12 | 5.32 | **7.0** | 0.0° | 35.3° | 45.0° | 0.28 |
 | `Cylinder` | 1.01 | 1.08 | **1.1** | 1.5° | 37.9° | 83.3° | 0.09 |
@@ -98,7 +98,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | `Square Plate Small Hole` | 5.00 | 800.00 | **800.0** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Far Away` | 5.00 | 798.92 | **798.9** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Scaled Down` | 3.54 | 7.07 | **7.1** | 0.0° | 45.0° | 45.0° | 0.68 |
-| `Truncated Cone` | 1.14 | 1.79 | **1.8** | 2.2° | 44.7° | 81.9° | 0.30 |
+| `Truncated Cone` | 1.13 | 1.79 | **1.8** | 2.2° | 44.6° | 83.2° | 0.30 |
 
 Percentiles and worst, never means: the failure mode is a handful of degenerate cells from a fan or a stretched band, and a mean hides exactly that. `Edge cv` is the coefficient of variation of edge length — how uneven the mesh is overall.
 

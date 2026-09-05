@@ -59,7 +59,7 @@ class SideReference:
     __slots__ = ("index", "loop", "in_loop", "points", "match_points",
                  "neighbours", "reason", "strict_points", "source_points",
                  "match_world", "source_world", "applied", "applied_points",
-                 "outvoted")
+                 "outvoted", "tied_points", "tied_key")
 
     def __init__(
         self,
@@ -75,6 +75,13 @@ class SideReference:
         match_world: "list[mathutils.Vector] | None" = None,
         source_world: "list[mathutils.Vector] | None" = None,
     ) -> None:
+        # Points this side may be substituted with even though another side
+        # won its span -- because the two want the *same* count. See
+        # `_winning_matches`. None when it is not a co-winner; `tied_key` is
+        # the span it ties on, so a side of another span with a coincidentally
+        # equal count is never swept in with it.
+        self.tied_points = None
+        self.tied_key = ""
         # The same two point sets in world space, for the overlay to draw.
         # Kept here rather than transformed at draw time: a draw handler runs on
         # every redraw and has no business recomputing what generation knew.
@@ -192,6 +199,17 @@ def build_side_references(
          for loop_sides in prepared.loops_sides for side in loop_sides),
         default=0.0)
 
+    # Corners nothing in the model agrees on get moved onto the ones a
+    # neighbour already committed, *before* any side is measured against it.
+    # Everything below then works as it always has -- the sides simply start
+    # and end on the neighbour's own vertices instead of a quarter of the way
+    # round a circle. See `_recut_arbitrary_loop`.
+    if state.auto_match_neighbours:
+        for loop_i, arbitrary in enumerate(prepared.loops_corners_arbitrary):
+            if arbitrary:
+                _recut_arbitrary_loop(state, prepared, loop_i, committed,
+                                      face_id, reference_length)
+
     # Every side of the patch, so each match can be confined to the side it is
     # actually nearest -- see the `rivals` argument below.
     all_sides = [side for loop_sides in prepared.loops_sides for side in loop_sides]
@@ -239,6 +257,159 @@ def build_side_references(
 
     _active_sides = references
     return references
+
+
+def _recut_arbitrary_loop(
+    state: "state_mod.RetopPatchState",
+    prepared: "patchprep.PreparedPatch",
+    loop_i: int,
+    committed: CommittedMap,
+    face_id: int | None,
+    reference_length: float,
+) -> bool:
+    """Cut a cornerless loop where a committed neighbour put its vertices.
+
+    A disc, a circular pocket floor, the cap of a cylinder: nothing on the
+    boundary is a corner, so `sides.synthesise_corners` cuts it into four at
+    the quarter points of its arc length. Those four are arbitrary -- the loop
+    had to be split somewhere to have sides, and no other part of the model
+    agrees on where. Which is exactly why matching could never work on one.
+
+    The neighbour has its own vertices along that same circle, at its own
+    phase, and the quarter points fall *between* them. The endpoint rule in
+    `match_side_to_points` then asks each side for a committed vertex at a
+    corner the neighbour has no reason to have one at, and whether it finds one
+    is a coin toss per corner: measured on a truncated cone's cap, two of the
+    four sides landed within 0.0026 of a rim vertex and matched, while the
+    other two had theirs claimed by the side next door (it lies *on* that one)
+    and refused with "neighbour stops short of this side's start". Nothing
+    about the tolerances fixes that -- widening them far enough to swallow a
+    whole vertex spacing is what the half-cell offset rule exists to prevent.
+
+    So the loop is re-cut instead. The whole boundary is matched **once**, as
+    the closed side it really is -- which is the path `_close_matched_ring`
+    already handles, rotation and all -- and the sides are then carved out of
+    the neighbour's own ring of points. Every corner lands on a neighbour
+    vertex at distance zero, so the strict tolerance passes and *automatic*
+    matching fires, where before even a hand pin refused half the sides.
+
+    Two things this deliberately gives up, both of which the loop had nothing
+    to lose in the first place:
+
+    - the corner ids, blanked to `NO_SOURCE` because the new corners are not
+      source vertices at all. They weld by proximity like every other boundary
+      point, and span propagation out of this patch stops -- its corners were
+      never B-rep vertices, so the pairs it would have registered named
+      nothing any neighbour could look up.
+    - the side count is *kept*, which is what makes this safe everywhere else:
+      `find_generator` still sees four sides, and the commit path -- which
+      re-prepares the patch and replays the same references by index -- still
+      lines up.
+
+    Only a loop `sides` flagged arbitrary comes here. A shape corner (the end
+    of a strip, a slot's cap) is a fact about the boundary and is never moved.
+
+    Returns whether it re-cut.
+    """
+    sides = prepared.loops_sides[loop_i]
+    count = len(sides)
+    if count < 2:
+        return False
+
+    per_side = (prepared.loops_neighbours[loop_i]
+                if loop_i < len(prepared.loops_neighbours) else [])
+    neighbours = list(dict.fromkeys(
+        face for side_faces in per_side for face in side_faces))
+    pool = _match_pool(committed, neighbours, face_id)
+    if len(pool) <= count:
+        return False
+
+    # The loop as one closed polyline: consecutive sides share an endpoint.
+    loop_points = list(sides[0])
+    for side in sides[1:]:
+        loop_points.extend(side[1:])
+    if (loop_points[0] - loop_points[-1]).length > 1e-12:
+        loop_points.append(loop_points[0].copy())
+
+    # The strict answer, never the picker's margin: this runs unasked, on every
+    # hover, and moving a patch's corners is not something to do on a neighbour
+    # that merely passes nearby.
+    strict = mesh_build.side_match_tolerance(
+        state, loop_points, reference_length=reference_length)
+    ring, _reason = mesh_build.match_side_to_points(
+        pool, loop_points, strict, merge=strict)
+    if ring is None or len(ring) <= count:
+        return False
+
+    closed = ring[:-1]  # `_close_matched_ring` repeats the first to close it
+    n = len(closed)
+    if n <= count:
+        return False
+
+    # Anchored on the point nearest the corner the loop already had, so the
+    # cut moves as little as it can: a hover that re-cuts to a different
+    # rotation every frame would be its own kind of broken.
+    anchor = min(range(n), key=lambda i: (closed[i] - sides[0][0]).length)
+    lengths = _opposed_segment_counts(n, count)
+    if lengths is None:
+        return False
+
+    new_sides = []
+    at = anchor
+    for segments in lengths:
+        piece = [closed[(at + step) % n] for step in range(segments + 1)]
+        new_sides.append([point.copy() for point in piece])
+        at += segments
+
+    # Which faces each new side borders, carried over from whichever old side
+    # it runs along. The cut points barely move, so this is a relabelling
+    # rather than a re-derivation -- but it has to happen, or a side could be
+    # matched against a patch it does not touch.
+    new_neighbours = []
+    for piece in new_sides:
+        middle = piece[len(piece) // 2]
+        nearest = min(
+            range(count),
+            key=lambda i: mesh_build._distance_to_polyline(middle, sides[i])[0])
+        new_neighbours.append(list(per_side[nearest])
+                              if nearest < len(per_side) else [])
+
+    prepared.loops_sides[loop_i] = new_sides
+    prepared.loops_corner_ids[loop_i] = [mesh_build.NO_SOURCE] * count
+    if loop_i < len(prepared.loops_neighbours):
+        prepared.loops_neighbours[loop_i] = new_neighbours
+    return True
+
+
+def _opposed_segment_counts(n: int, count: int) -> list[int] | None:
+    """How to share `n` segments between `count` sides of a re-cut loop.
+
+    As evenly as possible, but with **opposite sides equal** wherever the
+    arithmetic allows, and that is the whole reason this is not one line. A
+    grid has one span per direction, so sides 0 and 2 of a quad are the same
+    number: hand them 12 and 13 and only one of the two can be honoured, the
+    other is outvoted by `_winning_matches` and left on the CAD tessellation --
+    a crack down one half of a disc that had just been cut to weld. Spreading
+    the remainder over *pairs* costs nothing (the two counts still differ by at
+    most one, exactly as before) and lets all four sides be reproduced.
+
+    An odd remainder on an even side count cannot be paired, and neither can an
+    odd side count; both fall back to spreading one at a time, which is no
+    worse than what a boundary of that length could ever have offered.
+    """
+    if count < 2 or n < count:
+        return None
+    counts = [n // count] * count
+    remainder = n - sum(counts)
+    if count % 2 == 0 and remainder % 2 == 0:
+        half = count // 2
+        for k in range(remainder // 2):
+            counts[k % half] += 1
+            counts[k % half + half] += 1
+    else:
+        for k in range(remainder):
+            counts[k % count] += 1
+    return counts if all(value >= 1 for value in counts) else None
 
 
 def _empty_pool_reason(
@@ -420,25 +591,38 @@ def _winning_matches(
     A pin beats an automatic match, because it was asked for. Between two of a
     kind the denser one wins: it is the one that would lose the most detail.
     """
-    best = {}
-    losers = []
+    by_key: "dict[str, list[tuple[tuple, SideReference, list[mathutils.Vector], bool]]]" = {}
     for reference, _points, _pinned in candidates:
-        reference.outvoted = False  # re-decided every generation
+        reference.outvoted = False   # re-decided every generation
+        reference.tied_points = None
+        reference.tied_key = ""
     for reference, points, pinned in candidates:
         key = span_key_for(generator_name, reference)
         rank = (1 if pinned else 0, len(points), -reference.index)
-        current = best.get(key)
-        if current is None or rank > current[0]:
-            if current is not None:
-                losers.append(current[1])
-            best[key] = (rank, reference, points, pinned)
-        else:
-            losers.append(reference)
+        by_key.setdefault(key, []).append((rank, reference, points, pinned))
+
+    best = {}
+    losers = []
+    for key, entries in by_key.items():
+        entries.sort(key=lambda entry: entry[0], reverse=True)
+        rank, reference, points, pinned = entries[0]
+        best[key] = (reference, points, pinned)
+        for _rank, other, other_points, _pinned in entries[1:]:
+            # Two sides driving one span is only a conflict when they want
+            # *different* counts. A quad's opposite sides asking for the same
+            # number can both be reproduced -- the grid puts that many segments
+            # along the direction and each side lands on its own neighbour's
+            # vertices. Outvoting one of them anyway left half a re-cut disc
+            # welded and half of it on the CAD tessellation, which is a crack
+            # down a boundary that had just been arranged to close.
+            if len(other_points) == len(points):
+                other.tied_points = other_points
+                other.tied_key = key
+            else:
+                losers.append(other)
     for reference in losers:
         reference.outvoted = True
-    return ({key: (reference, points, pinned)
-             for key, (_rank, reference, points, pinned) in best.items()},
-            losers)
+    return best, losers
 
 
 def collect_side_matches(
@@ -518,26 +702,55 @@ def apply_side_matches(
             # way of showing.
             reference.outvoted = True
             continue
-        original = prepared.loops_sides[reference.loop][reference.in_loop]
-        prepared.loops_sides[reference.loop][reference.in_loop] = points
-        counts[reference.index] = len(points) - 1
-        reference.applied = True
-        reference.applied_points = points
-
-        # If the match moved this side's first point, the corner is no longer
-        # the source vertex it is named after -- and a corner welds *by
-        # identity*, so leaving the name on it would make a later patch reuse
-        # a vertex that has since moved, or drag this one onto it. Blank it and
-        # let that point weld by proximity like every other boundary point.
-        # Only a cornerless loop can get here: a real corner is a B-rep vertex
-        # the neighbour shares, so its match starts exactly on it.
-        tolerance = mesh_build.side_match_tolerance(state, original)
-        if (points[0] - original[0]).length > tolerance:
-            corner_ids = prepared.loops_corner_ids[reference.loop]
-            if reference.in_loop < len(corner_ids):
-                corner_ids[reference.in_loop] = mesh_build.NO_SOURCE
+        for side_reference, side_points in _with_ties(key, reference, points):
+            original = prepared.loops_sides[side_reference.loop][side_reference.in_loop]
+            prepared.loops_sides[side_reference.loop][side_reference.in_loop] = side_points
+            counts[side_reference.index] = len(side_points) - 1
+            side_reference.applied = True
+            side_reference.applied_points = side_points
+            _blank_moved_corner(state, prepared, side_reference, original, side_points)
 
     return counts, [reference.index for reference in losers]
+
+
+def _with_ties(
+    key: str, reference: SideReference, points: "list[mathutils.Vector]"
+) -> "list[tuple[SideReference, list[mathutils.Vector]]]":
+    """The winner of a span, plus any side that tied it on count.
+
+    A tie is not a conflict: both sides get the number of segments the span
+    resolved to, so both can be handed their own neighbour's vertices. Each
+    keeps its *own* points -- they lie along different boundaries.
+    """
+    applied = [(reference, points)]
+    for other in active_sides():
+        if (other is not reference and other.tied_key == key
+                and other.tied_points is not None
+                and len(other.tied_points) == len(points)):
+            applied.append((other, other.tied_points))
+    return applied
+
+
+def _blank_moved_corner(
+    state: "state_mod.RetopPatchState",
+    prepared: "patchprep.PreparedPatch",
+    reference: SideReference,
+    original: "list[mathutils.Vector]",
+    points: "list[mathutils.Vector]",
+) -> None:
+    """Drop a corner id the match has moved off its source vertex.
+
+    A corner welds *by identity*, so leaving the name on a point that has moved
+    would make a later patch reuse a vertex that is no longer there, or drag
+    this one onto it. Blanked, it welds by proximity like every other boundary
+    point. Only a cornerless loop can get here: a real corner is a B-rep vertex
+    the neighbour shares, so its match starts exactly on it.
+    """
+    tolerance = mesh_build.side_match_tolerance(state, original)
+    if (points[0] - original[0]).length > tolerance:
+        corner_ids = prepared.loops_corner_ids[reference.loop]
+        if reference.in_loop < len(corner_ids):
+            corner_ids[reference.in_loop] = mesh_build.NO_SOURCE
 
 
 def status_of(

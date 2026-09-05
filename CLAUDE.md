@@ -896,6 +896,54 @@ point that has moved would make a later patch reuse a vertex somewhere else, or
 drag this one onto it. It welds by proximity instead, like every other boundary
 point.
 
+**A corner nothing agrees on is cut where the neighbour already put one.**
+Nothing on a disc's boundary is a corner, so `sides.synthesise_corners` cuts it
+into four at the quarter points of its arc length -- and those four are
+arbitrary in the strongest sense: the loop had to be split somewhere to have
+sides, and no other part of the model has an opinion on where. The neighbour
+has its own vertices along that same circle at its own phase, so the quarter
+points fall *between* them, and the endpoint-coverage rule then asks each side
+for a committed vertex at a corner the neighbour has no reason to have one at.
+Whether it finds one is a coin toss per corner: on the fixture's truncated cone
+two of the four sides landed within 0.0026 of a rim vertex and matched, while
+the other two had theirs claimed by the side next door -- it lies *on* that one,
+so `rivals` drops it, correctly -- and refused with "neighbour stops short of
+this side's start". That is the reported "a cap can never be matched to the ring
+around it", and no tolerance fixes it: widening one far enough to swallow a
+whole vertex spacing is exactly the half-cell offset the rule exists to prevent.
+`sidematch._recut_arbitrary_loop` re-cuts instead. The boundary is matched
+**once**, as the closed side it really is -- the `_close_matched_ring` path,
+rotation and all -- and the sides are carved out of the neighbour's own ring of
+points, so every corner lands on one at distance zero and the *strict* tolerance
+passes, i.e. automatic matching fires where a hand pin used to refuse half the
+sides. Three things make it safe. Only a loop `sides.resolve_corners_detail`
+flags **arbitrary** comes here -- a shape corner (a strip's end, a slot's cap)
+is a fact about the boundary and is never moved, which is why the flag is set
+by `synthesise_corners_detail`'s arc-length fallback alone. The side **count**
+is kept, so `find_generator` still sees a quad and the commit path, which
+re-prepares the patch and replays the references by index, still lines up. And
+it runs only with `auto_match_neighbours` on: moving a patch's corners is not
+something to do unasked. What it gives up is the corner ids (blanked to
+`NO_SOURCE`, so span propagation *out* of the patch stops) -- its corners were
+never B-rep vertices, so the pairs it would have registered named nothing a
+neighbour could look up. `tests/test_disc_match.py` asserts both ends: that the
+quarter cut really is unmatchable, or the test proves nothing, and that every
+side is applied afterwards on grid and n-gon alike. On the fixture the two cones
+went from 140 and 200 open boundary edges to zero.
+
+**Two sides driving one span is only a conflict when they want different
+counts.** `_winning_matches` outvoted every side but one per span key, which is
+right when a grid is asked for 12 along a direction by one side and 13 by the
+other -- and wrong when both ask for the same number, which a re-cut loop makes
+the normal case (`_opposed_segment_counts` spreads the remainder over *opposite*
+pairs precisely so they agree). Outvoting one of them anyway left half a disc
+welded and half of it on the CAD tessellation: a crack down a boundary that had
+just been arranged to close. A tie is recorded on the loser as
+`SideReference.tied_points` -- with `tied_key`, so a side of *another* span with
+a coincidentally equal count is never swept in with it -- and `_with_ties` hands
+both sides their own neighbour's vertices. Each keeps its own points: they agree
+on the count, not on where they are.
+
 **How far a match reaches off a side is not how close two vertices have to be
 to be the same one.** Both were `tolerance`, and on a real part the two numbers
 cross: the picker's margin is a share of the *patch's longest side*, which on a

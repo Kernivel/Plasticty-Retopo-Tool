@@ -117,13 +117,13 @@ EXPECTED = {
     ),
     "Cone": dict(
         source_tris=188, patches=2,
-        result_verts=682, result_faces=612,
+        result_verts=614, result_faces=612,
         faces=[
             (72695, "Quad", 4, 1),
             (72700, "Quad", 4, 1),
         ],
-        max_deviation_pct=19.0,  # measured 13.8728%
-        open_edges=140,
+        max_deviation_pct=19.0,  # measured 13.8606%
+        open_edges=0,
     ),
     "Cube Bevel Edges": dict(
         source_tris=1556, patches=13,
@@ -345,14 +345,14 @@ EXPECTED = {
     ),
     "Truncated Cone": dict(
         source_tris=264, patches=3,
-        result_verts=912, result_faces=812,
+        result_verts=814, result_faces=812,
         faces=[
             (90207, "Ring", 2, 2),
             (90212, "Quad", 4, 1),
             (93228, "Quad", 4, 1),
         ],
         max_deviation_pct=0.11,  # measured 0.0807%
-        open_edges=200,
+        open_edges=0,
     ),
 }
 

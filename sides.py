@@ -366,7 +366,14 @@ def shape_corners(loop: Loop, positions: Positions) -> list[int]:
 def synthesise_corners(
     loop: Loop, positions: Positions, count: int = FALLBACK_CORNER_COUNT
 ) -> list[int]:
-    """Corners for a boundary that has none to detect.
+    """Corners for a boundary that has none to detect. See the detail form."""
+    return synthesise_corners_detail(loop, positions, count)[0]
+
+
+def synthesise_corners_detail(
+    loop: Loop, positions: Positions, count: int = FALLBACK_CORNER_COUNT
+) -> tuple[list[int], bool]:
+    """(corners, whether they are *arbitrary*) for a boundary with none.
 
     The shape is asked first (`shape_corners`): a strip, a slot, a rounded
     rectangle all have ends even when no single vertex is sharp. Only a
@@ -374,18 +381,28 @@ def synthesise_corners(
     spread evenly by arc length. Arc length rather than index spacing: a
     tessellated circle is not sampled uniformly, so every `n // 4`th vertex
     would bunch the corners wherever the mesher happened to be dense.
+
+    That last case is the only one reported as **arbitrary**, and the flag
+    matters downstream. A shape corner is a fact about the boundary -- the end
+    of a strip is where it is, and moving it would destroy the very feature it
+    marks. A quarter point on a circle is a fact about nothing at all: it says
+    only that the loop had to be cut somewhere to have sides, and every
+    rotation of the four is as good as every other. `sidematch` uses that
+    licence to cut them where a committed neighbour already put its vertices,
+    which is the difference between a disc that welds to the ring around it and
+    one that cannot (see `_recut_arbitrary_loop`).
     """
     n = len(loop)
     if n <= count:
-        return list(range(n))
+        return list(range(n)), False
 
     from_shape = shape_corners(loop, positions)
     if from_shape:
-        return from_shape
+        return from_shape, False
 
     cumulative, total = _cumulative_lengths(loop, positions)
     if total < 1e-12:
-        return list(range(count))
+        return list(range(count)), True
 
     corners = []
     for k in range(count):
@@ -393,7 +410,7 @@ def synthesise_corners(
         index = min(range(n), key=lambda i: abs(cumulative[i] - target))
         if index not in corners:
             corners.append(index)
-    return sorted(corners)
+    return sorted(corners), True
 
 
 def complete_corners(
@@ -444,7 +461,24 @@ def resolve_corners(
     method: str = 'BOTH',
     allow_synthesis: bool = True,
 ) -> list[int]:
-    """Corner indices for `loop` under the chosen method.
+    """Corner indices for `loop`. See `resolve_corners_detail`."""
+    return resolve_corners_detail(loop, positions, angle_threshold,
+                                  neighbour_ids, method, allow_synthesis)[0]
+
+
+def resolve_corners_detail(
+    loop: Loop,
+    positions: Positions,
+    angle_threshold: float = 135.0,
+    neighbour_ids: list[int | None] | None = None,
+    method: str = 'BOTH',
+    allow_synthesis: bool = True,
+) -> tuple[list[int], bool]:
+    """(corner indices, whether they are arbitrary) under the chosen method.
+
+    The second value is True only when *nothing* was detected and the corners
+    are the four quarter points of a circle -- see `synthesise_corners_detail`
+    for why that case is worth telling apart from every other.
 
     'TOPOLOGY' falls back to the angle test when the boundary has no junction
     at all -- with no corners a patch is one single side, which every
@@ -482,7 +516,7 @@ def resolve_corners(
 
 def _fill_out(
     loop: Loop, positions: Positions, corners: list[int], allow_synthesis: bool
-) -> list[int]:
+) -> tuple[list[int], bool]:
     """Corners as resolved, topped up to a usable count when allowed.
 
     Fewer than two corners means fewer than two sides, and no generator takes
@@ -494,10 +528,12 @@ def _fill_out(
     a shear instead of straight across the band.
     """
     if len(corners) >= 2 or not allow_synthesis:
-        return corners
+        return corners, False
     if corners:
-        return complete_corners(loop, positions, corners)
-    return synthesise_corners(loop, positions)
+        # One real corner kept and the rest spread from it: the shape's one
+        # feature is still on a side boundary, so these are not arbitrary.
+        return complete_corners(loop, positions, corners), False
+    return synthesise_corners_detail(loop, positions)
 
 
 def split_into_sides(
