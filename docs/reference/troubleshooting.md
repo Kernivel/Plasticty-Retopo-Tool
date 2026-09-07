@@ -1,5 +1,16 @@
 # Troubleshooting
 
+## Reporting a bug
+
+Include:
+
+- the **version and build string** from the System tab (and whether the red
+  stale-load line was showing);
+- your **Blender version**;
+- the `.blend`, or the object, if you can share it;
+- what the panel said — the generator name, the side count, the loop count, and
+  any warning.
+
 ## "I deployed and nothing changed"
 
 **Check the version string in the System tab first, before anything else.**
@@ -78,16 +89,16 @@ The two patches have different vertices on that boundary. In order of likelihood
 
 ## The retopology is inside out
 
-Blender's face-orientation overlay shows it in red. This was a real bug in ring
-patches with a matched hole; it is asserted against on every fixture shape now.
-If you hit it, please report the file.
+Blender's face-orientation overlay shows it in red.
+Some generators might not produce the correct orientation.
+Some changes were already made for the ring operator, but if this shows up,
+please report the bug.
 
 ## A committed patch cannot be re-edited
 
 The panel names the result mesh this session writes to, with its face and patch
 count, while you are picking surfaces. If it says it could not find the faces to
-remove, the retopology you can see does **not** belong to that mesh — committing
-would leave the old surface overlapping the new one.
+remove, the retopology you can see does **not** belong to that mesh.
 
 Usually that means the source object was renamed or re-imported, so a session on
 the new name started a *second* result mesh. Everything resolves through
@@ -101,7 +112,7 @@ The session should pass through everything outside the 3D view's viewport region
 Blender's default Region Overlap.
 
 If you can reproduce a panel field that will not take a keystroke while a session
-runs, that is a bug worth reporting; it has come back more than once.
+runs please report a bug worth with the latest steps (if possible).
 
 ## The session will not start
 
@@ -109,20 +120,3 @@ runs, that is a bug worth reporting; it has come back more than once.
 - **`session_active` is set with no modal listening** — a reload or a crashed
   modal. The panel detects it and offers a reset.
 
-## Ctrl+Z went too far
-
-One step is one patch, but the session's own entry is a step too, so pressing
-past the last committed patch ends the session.
-<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> puts everything back, and you can
-start a new session on the same object and carry on.
-
-## Reporting a bug
-
-Include:
-
-- the **version and build string** from the System tab (and whether the red
-  stale-load line was showing);
-- your **Blender version**;
-- the `.blend`, or the object, if you can share it;
-- what the panel said — the generator name, the side count, the loop count, and
-  any warning.

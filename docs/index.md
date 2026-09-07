@@ -7,8 +7,9 @@ but the assets could still be optimized to be more game-ready.
 This addon aims to make the process of retopologizing those Plasticity CAD meshes in Blender
 easier, with tools to create and edit patches.
 
-<!-- media: 15s hero loop. Orbit a CAD part with the CAD-edge overlay on, hover
-     three patches, commit two. No panel, no cursor chrome. -->
+<video autoplay loop muted playsinline poster="assets/img/overview.jpg">
+  <source src="assets/video/overview.webm" type="video/webm">
+</video>
 
 **Click to create/edit patches.** The plugin identifies plasticity patches, you
 can then click them to select them. Plasticity Retopo will then try to select the

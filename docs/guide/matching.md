@@ -1,15 +1,16 @@
 # Matching a neighbour
 
-Matching is this plugin way to accelerate the process of retopologizing a patch.
-When the plugin detects an already comitted neighbour, it will try to create and merge vertices to match the adjacent surface.
+Matching is this plugin way to speed up the process of retopologizing a patch.
+When the plugin detects an already committed neighbour, it will try to create and merge vertices to match the adjacent surface.
 
 This works for both spans and N-gons in both directions.
 For N-gons it will put vertices following the boundary.
 
-<!-- media: 12s split. Left: a shared edge with counts equal but points offset,
-     zoomed on the crack. Right: the same edge matched, points coincident. -->
+<video autoplay loop muted playsinline poster="../../assets/img/matching-crack.jpg">
+  <source src="../../assets/video/matching-crack.webm" type="video/webm">
+</video>
 
-**Match Committed Neighbours** is on by default, and applies to *every*
+**Match Committed Neighbours** is on by default and applies to *every*
 generator.
 
 
@@ -19,54 +20,27 @@ Press <kbd>M</kbd> to toggle the side highlight (it is a preference, so it
 survives between patches and sessions). Every side of the patch is drawn on the
 surface:
 
+Matching is binary — a side reproduces the patch across it, or it does not — so
+the colours answer that one question:
+
 | | |
 |---|---|
-| <span class="side-swatch" style="background:#3ddc84"></span> **Green** | this side is being matched, and the preview is reproducing it |
-| <span class="side-swatch" style="background:#f0a500"></span> **Amber** | this side is following its own CAD edge |
-| <span class="side-swatch" style="background:#8a8a8a"></span> **Grey** | neither |
+| <span class="side-swatch" style="background:#3ddc84"></span> **Green** | matched: the preview is reproducing the neighbour's vertices |
+| <span class="side-swatch" style="background:#e6473d"></span> **Red** | there **is** a committed patch across this side and it is not being matched |
+| <span class="side-swatch" style="background:#8a8a8a"></span> **Grey** | nothing committed across it yet: normal, nothing to fix |
 | **Brighter** | under the cursor |
 
-!!! note "Green means the side *is being* matched*"
+**Click a side** to match it to the committed neighbour across it. **Click a
+matched side again** to turn the match off — which turns it red, because that
+is what releasing it leaves behind. A side with nothing across it cannot be
+matched at all, and the click is refused.
 
-    Those are different answers. A side that lost a span collision, or whose span
-    you typed over since, is not green — it says so in the tooltip by the cursor
-    instead.
+The overlay also draws **which vertices the match would take** — green dots on
+the hovered side's candidates and on every pinned side's
 
-**Click a side** to pin it: to the committed neighbour across it, or — when
-nothing across it is retopologized yet — to the side's own CAD tessellation.
-**Click a matched side again** to turn the match off.
-
-The overlay also draws **which vertices the match would take** — dots on the
-hovered side's candidates and on every pinned side's, green from a neighbour and
-amber from the CAD edge. Knowing a side *can* be matched is only half of it; a
-match going to the wrong neighbour or stopping short is invisible from a coloured
-line lying on the boundary.
-
-<!-- media: 15s. Hover along the sides of one patch so each colour and its
-     tooltip appears, then click one and click another. -->
-
-## Three kinds of pin
-
-| | Gesture | Follows |
-|---|---|---|
-| **Neighbour** | click a side with a committed neighbour | the committed patch across the side |
-| **Source** | click a side with none | the side's own CAD tessellation, thinned by curvature |
-| **Excluded** | click a matched side | nothing — leave this side alone |
-
-**Source** needs no neighbour at all, so it works on the very first patch of a
-model and on any side facing nothing yet. It has no gesture of its own: one
-click covers both, because a side with nothing across it has only one thing it
-could possibly follow. (<kbd>Ctrl</kbd>+click used to force it even where a
-neighbour *was* available — keeping the CAD density instead of welding — and
-that was not worth a modifier on the picker's only click.)
-
-**Excluded** exists because with automatic matching on — the default — releasing
-the *pin* is invisible: the automatic pass would put the match straight back on
-the next regeneration and the side would stay green, so the click read as broken.
-It is a plain two-state toggle instead.
-
-A pin stores the *kind*, not the count. The count is recomputed from live
-geometry every regeneration, so a stored copy could only disagree.
+<video autoplay loop muted playsinline poster="../../assets/img/matching-side-colours.jpg">
+  <source src="../../assets/video/matching-side-colours.webm" type="video/webm">
+</video>
 
 ## How far a match reaches
 
@@ -87,49 +61,50 @@ side beside it matched without trouble.
 
 ## A side may only match the faces it actually borders
 
-This is not proximity. Proximity cannot tell "the patch across this edge" from "a
+Proximity cannot tell "the patch across this edge" from "a
 patch that happens to run close by" — a face stacked a fraction above another, a
 thin wall, two sheets meeting at a shallow angle all put committed vertices well
 inside a side's reach without touching it, and the side comes back tracing a loop
 through its neighbourhood instead of the edge it shares.
 
 The mesh already records which face is across each boundary segment, so a side is
-matched **only** against the patches it genuinely borders — and against *all* of
-them, since a boundary between two committed patches often falls mid-side.
+matched **only** against the patches it genuinely borders.
 
-When a side's neighbours are named but none of them is committed yet, the pool is
-**empty** rather than falling back to the rest of the mesh, and the panel names
-the patch it is waiting for.
 
 ## A grid cannot honour two counts in one direction
 
 A quad grid has one span per *direction*. Two sides wanting different counts
 along the same axis cannot both be honoured, so:
 
-1. a **pin** beats an automatic match;
+1. a manual **match** beats an automatic match;
 2. then the **denser** one wins;
 3. only the winner's vertices are substituted — the loser keeps the boundary the
    CAD drew, rather than a resampled version of someone else's.
 
 The panel reports how many sides were outvoted.
 
-!!! tip "Not every generator collides"
-
-    An n-gon gets a key per side and a [ring](rings.md) one per *loop*, so
-    neither collides with itself. An [N-Side](generators.md#the-n-side-patch)
-    solves its spoke allocation, so several of its sides can be matched at once.
 
 ## Changing a span releases a match
 
-Spans are resolved *before* any side is rewritten, and a match the resolved span
-can no longer reproduce is then dropped.
+Changing the span means the spans count and the neighbour's count are no longer
+equal. During adjustment, it is preferable to have the matching automatically
+release the match to allow the user to tweak the spanning on the current patch.
 
-That split is what makes the span control work at all: without it, scrolling the
-span on a side bordering a committed neighbour did nothing — the match put its
-own count straight back every regeneration and the control looked broken.
+## After the commit: cracked borders
 
-**Changing the count away from the neighbour's is how you say "don't weld here".**
-A pin is immune, because you asked for it.
+The side colours only exist while a patch is open. Match two patches, commit
+both, then re-open one and change its span: the match is released — that is what
+changing the count means — and the patch you did **not** touch is left with a
+seam down the side it shares. Nothing about it changed, and until now nothing
+said anything.
+
+**Cracked borders** is the standing version of that warning. Any CAD edge with a
+committed patch on both sides that the retopology failed to close is dashed in
+red.
+
+<video autoplay loop muted playsinline poster="../../assets/img/cracked-borders.jpg">
+  <source src="../../assets/video/cracked-borders.webm" type="video/webm">
+</video>
 
 ## Reasons
 
