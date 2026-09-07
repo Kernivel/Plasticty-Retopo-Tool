@@ -46,6 +46,17 @@ I would recommend using N-gons exclusively for flat surfaces.
 Regular spanning can create weird grids when working surfaces that have too many sides:
 In this cas creating an N-gon that matches the neighbor quad patches is usually easier.
 
+## Where to start
+
+This is personal advice, but I would recommend starting with the most dense patches first, as a way to dictate the rest of the topology.
+For instance, rings, curved surfaces, and bevels are often the best to start with.
+
+## Work on Neighbors first
+
+After creating a patch, it is advised to work on the patches that are next to it.
+If not, the matching could have issues if two neighbors use different spannings for their patches: in this case,
+the matching isn't able to produce a spanning topology that conforms to both neighbors resulting in holes in the mesh.
+
 ## Editing the retopology
 
 Accessing Blender's Edit Mode is available by pressing <kbd>Tab</kbd>, it enables mix snapping vertices, and faces to let

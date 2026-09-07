@@ -1,25 +1,17 @@
 # Matching a neighbour
 
-Two patches only weld if their shared boundary carries the **same vertices** —
-not merely the same count.
+Matching is this plugin way to accelerate the process of retopologizing a patch.
+When the plugin detects an already comitted neighbour, it will try to create and merge vertices to match the adjacent surface.
 
-That distinction is the whole feature, and it is invisible until you look at the
-vertices. A neighbour committed as an [n-gon](ngon.md) put its points where the
-boundary *curves*, not at even spacing; a grid resampling evenly to the same
-count lands between them every time. So a matched side is handed the neighbour's
-own committed vertices, and the generator is told the count that reproduces them.
+This works for both spans and N-gons in both directions.
+For N-gons it will put vertices following the boundary.
 
 <!-- media: 12s split. Left: a shared edge with counts equal but points offset,
      zoomed on the crack. Right: the same edge matched, points coincident. -->
 
-## It happens by itself
-
 **Match Committed Neighbours** is on by default, and applies to *every*
-generator. Retop one face, then the one next door, and their shared boundary is
-already welded.
+generator.
 
-Automatic matching only ever takes an **exact** answer — it fires without being
-asked, so it must never reach for something that merely happens to be nearby.
 
 ## Pointing at a side
 
@@ -34,7 +26,7 @@ surface:
 | <span class="side-swatch" style="background:#8a8a8a"></span> **Grey** | neither |
 | **Brighter** | under the cursor |
 
-!!! note "Green means *is being* matched, not *could be*"
+!!! note "Green means the side *is being* matched*"
 
     Those are different answers. A side that lost a span collision, or whose span
     you typed over since, is not green — it says so in the tooltip by the cursor
