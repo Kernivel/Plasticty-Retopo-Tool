@@ -46,6 +46,16 @@ I would recommend using N-gons exclusively for flat surfaces.
 Regular spanning can create weird grids when working surfaces that have too many sides:
 In this cas creating an N-gon that matches the neighbor quad patches is usually easier.
 
+## Complex cases
+!! warning "Complex geometry"
+
+    If you have a complex case, with a single surface containing, rings, holes and curved surfaces,
+    the addon might not be able to produce a patch that would be acceptable.
+    In this case, the best approach is to go back to Plasticity and use either Isoparam (Plasticity's loopcuts)
+    or the Knife tool, to simplify a large patch into smaller ones.
+
+<!-- media: 1min. Exemple of a complex case solved by reworking the topology in Plasticity. -->
+
 ## Where to start
 
 This is personal advice, but I would recommend starting with the most dense patches first, as a way to dictate the rest of the topology.

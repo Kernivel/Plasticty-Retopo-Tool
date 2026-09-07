@@ -49,11 +49,11 @@ nav:
   - Getting started:
       - Installation: installation.md
       - Your first patch: first-patch.md
-      - Workflow: session.md
+      - General: general.md
   - Guide:
-      - How it works: guide/generators.md
       - Matching a neighbour: guide/matching.md
       - N-gon mode: guide/ngon.md
+      - How it works: guide/generators.md
       - Faces with a hole: guide/rings.md
       - Symmetry: guide/symmetry.md
       - Hand-editing the result: guide/hand-editing.md
