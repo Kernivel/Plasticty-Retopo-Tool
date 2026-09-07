@@ -72,15 +72,12 @@ ACTIONS: tuple[tuple[str, str, str, str, dict[str, object], list[dict[str, objec
     # was never a reason for it to be fixed in the modal -- only the *fallback*
     # (nothing under the cursor, so commit) genuinely depends on the hover.
     #
-    # One click, not two. `Ctrl`+click used to force the side's own CAD
-    # tessellation, and it was redundant: `adopt_side_reference` already falls
-    # back to the CAD edge whenever the side has no committed neighbour, which
-    # is every case anyone reached for it in. What the second gesture actually
-    # offered was overriding a neighbour that *is* there -- keeping the CAD
-    # density instead of welding -- and that is not worth a modifier on the
-    # one click the picker has.
+    # One click, one meaning. Matching is binary -- the side reproduces the
+    # neighbour across it or it does not -- so there is no second gesture and
+    # no modifier: clicking a matched side releases it, clicking a released one
+    # matches it again.
     ("pin_neighbour", "Match side", SESSION, "retop.pin_side",
-     {"source": False}, [_b('LEFTMOUSE')]),
+     {}, [_b('LEFTMOUSE')]),
     ("delete_patch", "Delete patch", SESSION, "retop.delete_patch", {}, [_b('X')]),
     ("commit", "Commit patch", SESSION, "retop.commit_patch", {},
      [_b('RET'), _b('NUMPAD_ENTER'), _b('RIGHTMOUSE')]),

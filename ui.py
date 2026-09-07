@@ -282,6 +282,10 @@ def _draw_match_block(
     references = sidematch.active_sides()
     available = [reference for reference in references if reference.available]
     applied = [reference for reference in references if reference.applied]
+    # The red ones: retopology across them, and this patch not welding to it.
+    # Counted separately from `available` because that is the number worth
+    # acting on -- "could be matched" includes every side already matched.
+    cracks = [reference for reference in available if not reference.applied]
 
     row = box.row(align=True)
     row.operator("retop.toggle_match_mode",
@@ -291,11 +295,16 @@ def _draw_match_block(
         return
 
     # What is *being* matched comes first, because it is what the preview is
-    # made of. "Could be matched" is the second question, and reading only that
-    # one is what made the feature look as if it fired at random.
-    box.label(text=f"{len(applied)} of {len(references)} sides matched"
-                   + (f" ({len(available)} could be)" if available else ""),
+    # made of. Then the count that is a problem: a side bordering a committed
+    # patch and not reproducing it is a crack, and it is the only number here
+    # anyone can act on.
+    box.label(text=f"{len(applied)} of {len(references)} sides matched",
               icon='CHECKMARK' if applied else 'INFO')
+    if cracks:
+        alert = box.column(align=True)
+        alert.alert = True
+        alert.label(text=f"{len(cracks)} side(s) border a committed patch unmatched",
+                    icon='ERROR')
 
     hovered = None
     if 0 <= state.hovered_side < len(references):
@@ -306,7 +315,11 @@ def _draw_match_block(
         title, detail = sidematch.status_of(
             hovered, sidematch.side_override_map(state).get(hovered.index))
         note = box.column(align=True)
-        note.alert = not hovered.applied and not hovered.available
+        # Red in the panel for the same state the viewport paints red: a side
+        # that borders finished retopology and is not welding to it. A side
+        # with nothing across it is normal, and alerting on it -- which is what
+        # this did -- made the ordinary case look like the broken one.
+        note.alert = hovered.available and not hovered.applied
         note.label(text=title,
                    icon='CHECKMARK' if hovered.applied else 'INFO')
         note.label(text=detail)
@@ -548,6 +561,15 @@ def _draw_cad_display(
     box.separator()
     box.label(text="Show for:")
     box.row(align=True).prop(state, "cad_display_scope", expand=True)
+
+    # Filed under the CAD structure because it is drawn *on* a CAD edge -- the
+    # border two patches share -- and not under matching, which is about the
+    # patch currently open. This one is about work already committed.
+    box.separator()
+    box.prop(state, "show_cracks")
+    sub_cracks = box.column(align=True)
+    sub_cracks.enabled = state.show_cracks
+    sub_cracks.prop(state, "crack_color", text="")
 
 
 def _draw_mirror(

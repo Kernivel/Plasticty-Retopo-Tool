@@ -21,9 +21,10 @@ and enable *Plasticity Retop*. Updating means installing the newer zip over it.
    ```bash
    python scripts/deploy.py
    ```
-   Then enable *Plasticity Retop* in `Preferences > Add-ons`, and turn on
-   **Developer Mode** in its preferences — that is what shows the panel's
-   reload button and its stale-code warning.
+   Then enable *Plasticity Retop* in `Preferences > Add-ons`. **Developer
+   Mode** — the panel's reload button and its stale-code warning — switches
+   itself on the first time Blender loads a deployed copy, and again after
+   every later deploy; you can still turn it off in between.
 4. **Check everything works:**
    ```bash
    python scripts/run_tests.py
@@ -148,9 +149,16 @@ Changing a span away from a neighbour's count releases that match — asking for
 different count is asking not to weld — while a side you pinned by hand keeps
 its count regardless.
 
-`Ctrl` + click pins a side to its **own CAD tessellation** instead, thinned by
-curvature the way n-gon mode does it. That needs no neighbour at all, so it
-works on the first patch of a model and on any side facing nothing yet.
+Matching is binary, and the side colours say only that: green is a side being
+matched, **red** one that borders a committed patch and is not — the only state
+that leaves a crack — and grey one with nothing across it yet, which is normal.
+
+Those colours go with the session. **Cracked borders** is the standing version:
+any CAD edge with a committed patch on both sides that the retopology did not
+close is dashed in red for as long as it stays that way, and hovering it names
+the two patches. That is the state you land in by changing one patch's spans
+after its neighbour was matched to it — the patch that breaks is the one you did
+not touch.
 
 ## Mirroring
 

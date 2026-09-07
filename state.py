@@ -366,6 +366,23 @@ class RetopPatchState(bpy.types.PropertyGroup):
                      "curved or enclosed shape readable. They are nudged towards the viewer just "
                      "enough not to z-fight with the surface they lie on",
     )
+    show_cracks: bpy.props.BoolProperty(
+        # On by default, unlike every other overlay here. The others answer a
+        # question you chose to ask; this one reports a defect in finished
+        # work, and it is invisible from every angle until you look for it --
+        # the two patches are still there, still the right shape, simply not
+        # joined. A warning nobody switched on is the only kind that warns.
+        name="Show Cracked Borders", default=True,
+        description="Dash the CAD edges where two committed patches were both retopologized but "
+                     "did not weld to each other -- the seam left behind when one patch's spans "
+                     "are changed after its neighbour was matched to it. Only borders with a "
+                     "committed patch on both sides count: one that simply has not been "
+                     "retopologized yet is not a crack",
+    )
+    crack_color: bpy.props.FloatVectorProperty(
+        name="Cracked Border Color", subtype='COLOR', size=3, default=(1.0, 0.25, 0.2),
+        min=0.0, max=1.0, description="Colour of the cracked-border overlay",
+    )
     cad_edge_color: bpy.props.FloatVectorProperty(
         name="CAD Edge Color", subtype='COLOR', size=3, default=(0.1, 0.9, 1.0),
         min=0.0, max=1.0, description="Colour of the Plasticity edge overlay",

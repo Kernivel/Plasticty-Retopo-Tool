@@ -31,7 +31,6 @@ import json
 from typing import TYPE_CHECKING
 
 from . import constants
-from . import generators
 from . import mesh_build
 
 if TYPE_CHECKING:
@@ -57,8 +56,8 @@ class SideReference:
     """
 
     __slots__ = ("index", "loop", "in_loop", "points", "match_points",
-                 "neighbours", "reason", "strict_points", "source_points",
-                 "match_world", "source_world", "applied", "applied_points",
+                 "neighbours", "reason", "strict_points",
+                 "match_world", "applied", "applied_points",
                  "outvoted", "tied_points", "tied_key")
 
     def __init__(
@@ -71,9 +70,7 @@ class SideReference:
         neighbours: list[int] | None,
         reason: str = "",
         strict_points: "list[mathutils.Vector] | None" = None,
-        source_points: "list[mathutils.Vector] | None" = None,
         match_world: "list[mathutils.Vector] | None" = None,
-        source_world: "list[mathutils.Vector] | None" = None,
     ) -> None:
         # Points this side may be substituted with even though another side
         # won its span -- because the two want the *same* count. See
@@ -82,11 +79,10 @@ class SideReference:
         # equal count is never swept in with it.
         self.tied_points = None
         self.tied_key = ""
-        # The same two point sets in world space, for the overlay to draw.
-        # Kept here rather than transformed at draw time: a draw handler runs on
-        # every redraw and has no business recomputing what generation knew.
+        # The same points in world space, for the overlay to draw. Kept here
+        # rather than transformed at draw time: a draw handler runs on every
+        # redraw and has no business recomputing what generation knew.
         self.match_world = match_world or []
-        self.source_world = source_world or []
         # Why this side can't be matched, when it can't -- an opaque refusal on
         # a side that visibly touches retopology is impossible to act on.
         self.reason = reason
@@ -103,13 +99,6 @@ class SideReference:
         # when there is nothing to match, or when the neighbour covers only
         # part of the side.
         self.match_points = match_points
-        # The CAD boundary's own vertices along this side, thinned by curvature
-        # (the same rule N-gon mode follows). Always available: the source mesh
-        # is there whether or not anything has been committed yet, which is what
-        # lets a side be pinned to the *original* topology rather than to a
-        # neighbour -- a first patch has no committed neighbour to match, but it
-        # still has the tessellation Plasticity chose.
-        self.source_points = source_points or []
         # Every Plasticity face across this side, most-covering first. The
         # match is confined to these; see _side_neighbours.
         self.neighbours = list(neighbours or [])
@@ -139,11 +128,6 @@ class SideReference:
     def span(self) -> int | None:
         """Segments the neighbour put along this side."""
         return len(self.match_points) - 1 if self.match_points else None
-
-    @property
-    def source_span(self) -> int:
-        """Segments the CAD tessellation puts along this side."""
-        return max(1, len(self.source_points) - 1)
 
 
 # Rebuilt every time a patch is generated, dropped by a reload. The overlay and
@@ -224,7 +208,6 @@ def build_side_references(
                           if side_i < len(neighbours_of_side) else [])
             pool = _match_pool(committed, neighbours, face_id)
 
-            source_points = generators.ngon.side_points(side, state.ngon_angle)
             # Two answers, two reaches -- but *one* idea of what makes two
             # points the same vertex. The strict tolerance is that idea (it is
             # the weld distance), and the generous one is only about how far
@@ -249,9 +232,7 @@ def build_side_references(
                 neighbours=neighbours,
                 reason=reason,
                 strict_points=strict_points,
-                source_points=source_points,
                 match_world=[matrix @ point for point in (match_points or ())],
-                source_world=[matrix @ point for point in source_points],
             ))
             index += 1
 
@@ -467,13 +448,12 @@ def clear_side_references() -> None:
 # resolves to: the count is recomputed from live geometry every regeneration,
 # so keeping a stale copy of it could only ever disagree.
 PIN_NEIGHBOUR = "N"  # follow the committed patch across this side
-PIN_SOURCE = "S"     # follow the CAD tessellation of this side itself
 # "Leave this side alone" -- and it has to be recorded, not merely absent.
 # Automatic matching is on by default, so releasing a pin puts the automatic
 # match straight back and the side stays green: clicking a matched side looked
 # like it did nothing at all. This is what the click actually means.
 PIN_EXCLUDED = "-"
-PIN_KINDS = (PIN_NEIGHBOUR, PIN_SOURCE, PIN_EXCLUDED)
+PIN_KINDS = (PIN_NEIGHBOUR, PIN_EXCLUDED)
 
 
 def side_override_map(state: "state_mod.RetopPatchState") -> dict[int, str]:
@@ -489,6 +469,9 @@ def side_override_map(state: "state_mod.RetopPatchState") -> dict[int, str]:
     for key, value in stored.items():
         # Older sessions stored the resolved segment count here; anything
         # numeric means "follow the neighbour", which is all it ever meant.
+        # A stored "S" is an older still: the CAD-tessellation pin, which no
+        # longer exists. It falls through to None here and the side simply
+        # matches, or doesn't, like any other.
         kind = value if value in PIN_KINDS else (
             PIN_NEIGHBOUR if isinstance(value, int) and value >= 1 else None)
         if kind is not None:
@@ -562,9 +545,7 @@ def _match_candidates(
         kind = pins.get(reference.index)
         if kind == PIN_EXCLUDED:
             continue  # asked for by hand; automatic matching does not override it
-        if kind == PIN_SOURCE:
-            points = reference.source_points
-        elif kind == PIN_NEIGHBOUR:
+        if kind == PIN_NEIGHBOUR:
             points = reference.match_points
         elif automatic and reference.available:
             points = reference.strict_points
@@ -759,33 +740,38 @@ def status_of(
     """(what this side is doing, why) -- one short line each.
 
     Written once here because the viewport tooltip and the panel have to say
-    the same thing: "this side can be matched" and "this side is being matched"
-    are different answers, and showing only the first is what made the feature
-    read as arbitrary. A side can border a finished neighbour and still not be
-    reproducing it -- it lost the span collision, or the span was typed by hand
-    since -- and nothing said so.
+    the same thing, and it is the same thing the colour says. Three states, in
+    the order they matter:
+
+    **Matched** (green), **unmatched against a committed neighbour** (red) and
+    **nothing to match** (grey). Only the middle one is a problem -- a side
+    bordering finished retopology that is not reproducing it leaves a real
+    crack, whether it lost a span collision, had its span typed over, or was
+    released by hand. A side with nothing across it yet is the normal state of
+    a model being retopologized and is never reported as a failure.
     """
     who = (f"patch {reference.neighbour}" if reference.neighbour is not None
            else "the committed neighbour")
     pinned = " (pinned)" if pin_kind and pin_kind != PIN_EXCLUDED else ""
 
     if reference.applied:
-        if pin_kind == PIN_SOURCE:
-            return ("Selected for surface matching",
-                    "follows this edge's own CAD tessellation (pinned)")
-        return ("Selected for surface matching",
+        return ("Matched",
                 f"reproduces {who}'s vertices{pinned} — click to release")
-    if pin_kind == PIN_EXCLUDED:
-        return ("Not selected for surface matching",
-                "released by hand — click to match it again")
-    if reference.outvoted:
-        return ("Not selected for surface matching",
-                "another side drives the same span, or the span was typed by hand")
     if reference.available:
-        return ("Not selected for surface matching",
-                f"click to match it to {who}")
-    return ("Not selected for surface matching",
-            reference.reason or "nothing to match along this edge")
+        # Red in the viewport: there is retopology across this side and this
+        # patch is not welding to it.
+        crack = "Not matched — this edge will crack"
+        if pin_kind == PIN_EXCLUDED:
+            return (crack, "released by hand — click to match it again")
+        if reference.outvoted:
+            return (crack,
+                    "another side drives the same span, or the span was typed by hand")
+        return (crack, f"click to match it to {who}")
+    if pin_kind == PIN_EXCLUDED:
+        return ("Nothing to match along this edge",
+                "released by hand, and nothing is committed across it either")
+    return ("Nothing to match along this edge",
+            reference.reason or "no committed neighbour here yet")
 
 
 def applied_loops() -> set[int]:

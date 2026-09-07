@@ -136,10 +136,13 @@ loose, _reason = pr.mesh_build.match_side_to_points(
 check("proximity on its own would have matched the stacked sheet",
       loose is not None, "refused, so this test proves nothing")
 
-# --- and the CAD edge is still on offer ------------------------------------
-check("the stacked side can still be pinned to its own CAD edge",
-      pr.operators.adopt_side_reference(
-          bpy.context, stacked.index, pr.sidematch.PIN_SOURCE) is not None)
+# --- and it cannot be pinned by hand either --------------------------------
+# The picker's margin is generous on purpose -- pointing at a side says which
+# neighbour you mean -- but generosity is about *drift along a shared edge*,
+# not about reaching a face this side does not border. A refusal here is the
+# whole point: the stacked sheet is never this side's neighbour, at any reach.
+check("and the stacked side cannot be pinned to it by hand",
+      pr.operators.adopt_side_reference(bpy.context, stacked.index) is None)
 
 pr.operators.end_session(bpy.context)
 

@@ -72,6 +72,25 @@ can silently half-fail when another installed addon errors during its own
 reload. A reload that leaves a module stale is the one failure
 the version string cannot report; see the reload invariant below.
 
+**A deploy switches Developer Mode on by itself.** `scripts/deploy.py` writes
+`.deployed` into the copy it makes, carrying a timestamp, and
+`prefs.seed_developer_mode` (called from `prefs.register`) turns the preference
+on when that stamp differs from the one it last acted on (`dev_seed_stamp`).
+Deploying *is* the statement that this is a working copy, and a deploy that
+lands with the reload button still hidden looks exactly like a deploy that did
+not land -- which is the one failure the version string exists to report.
+A stamp rather than a flag so it comes back on after *every* deploy while
+still being switchable off in between; `developer_mode()` keeps reading the
+preference, never the marker, or turning it off could not work at all. The name
+`.deployed` is spelled in **two files and cannot be shared** -- `scripts/` is
+excluded from the deploy, so the installed addon has no `deploy.py` to import
+it from -- which is the bl_info/version drift shape all over again, hence
+`tests/test_deploy_marker.py` comparing the two literals. The marker is in
+`SKIP_DIRS`, so a release zip can never carry one; seeding is silent when
+`keymap.preferences()` is None, so the tests and `--background` are untouched.
+Nothing can turn a preference on in a Blender that is already running, so the
+first deploy needs a restart or a re-enable before the button appears.
+
 **That button is behind `prefs.developer_mode`, off by default**, and so is
 the red stale-load warning. Neither means anything to someone who installed the
 addon from a release zip: there is one copy of the code, nothing writes over it
@@ -1046,8 +1065,56 @@ was committed with. `build_side_references` takes the face id explicitly.
 **Green is never a side merely under the cursor.** Hovering an unmatched side
 used to turn it the same green as a matched one, which put the two states one
 mouse move apart and undid most of what the colours are for. A hover brightens
-to *white*; red still means clicking would refuse, and whether a white one
-would match or refuse is the tooltip's answer.
+a side's *own* colour instead — never to green.
+
+- **A crack outlives the session that made it, so the report has to too.**
+  The side picker is the warning *while* a patch is open; commit it and the
+  warning leaves with the preview. But the patch that ends up cracked is the
+  one the user did **not** touch: match A to B, commit both, re-open A and type
+  a different span, and it is B that is left with a seam. `mesh_build.crack_edges`
+  is the standing answer — a CAD edge with a **committed patch on both sides**
+  that the result mesh leaves open along it. Both halves of that matter: an
+  open border with only one side committed is the frontier of the work, which
+  every part has and none of which is a defect, and painting it would make the
+  report meaningless for the same reason painting every unmatched side red
+  would.
+  **Detection reads the source's B-rep edges, never proximity between result
+  vertices.** Proximity cannot tell "the patch across this edge" from "a patch
+  that runs close by" — the same reason `_match_pool` exists — so two patches
+  are only ever compared along an edge the CAD model says they share
+  (`cad_display.shared_edges`, the pairs `edge_polylines` throws away).
+  **And every open edge is assigned to exactly one border: the one it lies
+  *along*.** Asking instead whether some open edge is *within reach* of a point
+  on the border cannot work, and the reason is worth keeping: the reach has to
+  be about the size of a retopology cell, and on a bevelled part the next
+  border along is that far away too. Measured on `Cube Bevel Edges`, four
+  perfectly welded borders came back "covered" by three samples of seven — by
+  the open rows of the borders either side of them — against seven of seven for
+  the two that were genuinely open, which is a threshold sitting inside the
+  thing it is meant to separate. Assignment separates them by *kind*: a row
+  along a border stays a chord's sagitta off it for its whole length (0.00 to
+  0.05 of a cell, measured), while an edge leaving a junction is on the border
+  at one end and a cell away at the other. `_border_along` probes the quarter
+  points — **never the ends**, where a junction puts every border meeting there
+  at the same distance and a coarse patch's whole-border-in-one-edge has
+  nothing but ends — and takes the border whose *furthest* probe is nearest,
+  requiring every probe to be within reach of it. One decision per edge, not
+  one per probe: a border shorter than the tolerance (`Cube Chamfer Edges` is
+  four cells wide) otherwise has its first probe answered by its neighbour and
+  the disagreement drops the crack entirely. Then a border is cracked when each
+  patch's assigned row covers `CRACK_COVERAGE` of it. Across the whole fixture
+  that reports 25 borders, every one of them independently confirmed, and
+  nothing between 0.00 and 0.42.
+  And what gets **drawn is that CAD edge**, not either patch's row — the two
+  rows sag off it by different amounts, which is the very thing being reported,
+  so drawing them would draw the symptom twice and neither would be the border.
+  Dashed, because the CAD edge overlay draws a solid line along the same curve
+  and a second solid one reads as more structure rather than as a warning; the
+  dashes are built into the geometry, since the builtin polyline shader has no
+  stipple and a pattern computed per redraw is what the cache exists to
+  prevent. Cached on both meshes' fingerprints, like everything else a draw
+  handler reads. `tests/test_cracks.py` pins that a welded border reports
+  nothing — or the test proves nothing — and that re-matching closes it.
 
 **A grid cannot honour two counts in one direction.** Two sides driving the
 same span used to both get substituted, with the second silently winning the
@@ -1077,36 +1144,52 @@ side alone" and `_match_candidates` honours it over the automatic pass, making
 the gesture a plain two-state toggle. Clicking an excluded side matches it
 again.
 
-**Three kinds of pin, but only one gesture.** `PIN_NEIGHBOUR` follows the
-committed patch across the side. `PIN_SOURCE` follows the side's **own CAD
-tessellation**, thinned by curvature with the same rule n-gon mode uses — no
-neighbour needed, so it works on the first patch of a model and on any side
-facing nothing yet. `PIN_EXCLUDED` is the third, above.
-`PIN_SOURCE` had its own `Ctrl`+click for a while and it was redundant:
-`adopt_side_reference` already falls back to it whenever the side has no
-committed neighbour, which is every case anyone reached for the modifier in.
-What the second gesture actually offered was *overriding* a neighbour that is
-there — keeping the CAD density instead of welding — and that is not worth a
-modifier on the one click the picker has. One click, two states. `state.side_overrides` stores the *kind*,
-not the count: the count is recomputed from live geometry every regeneration,
-so a stored copy could only disagree.
+**Two kinds of pin, one gesture, because matching is binary.**
+`PIN_NEIGHBOUR` follows the committed patch across the side; `PIN_EXCLUDED` is
+"leave this side alone", above. A side with nothing committed across it cannot
+be pinned at all — `adopt_side_reference` refuses it.
+
+There was a third, `PIN_SOURCE`: the side's **own CAD tessellation**, thinned
+by curvature with the same rule n-gon mode uses, needing no neighbour. It was
+not redundant in effect — an unmatched side of a *grid* is resampled evenly by
+`resample_polyline_by_arclength`, which cuts a chord across the very chamfer
+`ngon.side_points` would have kept — but it was redundant as an *answer*.
+Nothing is welded to anything, so it is not matching, and giving it a colour on
+the matched/unmatched scale turned a binary question into a three-way one: the
+overlay's own vocabulary said "this side is doing something with its
+neighbour" about a side that has no neighbour. It also had a `Ctrl`+click of
+its own for a while, dropped earlier for the same kind of reason. Keeping a
+chamfer that the even resampling cuts across is a *density* question, and if it
+comes back it belongs with the spans, not with the matching.
+
+`state.side_overrides` stores the *kind*, not the count: the count is
+recomputed from live geometry every regeneration, so a stored copy could only
+disagree.
 
 Every refusal carries a `reason`, surfaced in the click warning and the panel,
 and the viewport **brightens a side's own colour on hover** rather than
 replacing it — a single hover colour hid the one thing worth knowing before
 clicking, which is whether the side can be matched at all.
 
-**Green means a side is being matched, not that it could be.** Those are
-different answers and the picker used to give only the second: a side that had
-lost a span collision, or whose span the user had typed since, drew exactly the
-same green as one the preview was welding to. `SideReference.applied` (set by
-`apply_side_matches`, which is the only place that knows) and `.outvoted` carry
-the difference; `overlay._side_appearance` maps it — green for a match being
-reproduced, amber for one following its own CAD edge, grey for everything else,
-whether it *could* be matched or not. What tells those last two apart is the
-**tooltip by the cursor**: `sidematch.status_of` returns the one wording the
-overlay and the panel both use ("Selected / Not selected for surface matching",
-plus why), so the two can't disagree about the side under the pointer. The
+**Green means a side is being matched, and red means one that should be is
+not.** Three states for one binary question, and the middle one is the point:
+`applied` is green, `available and not applied` is **red**, and everything else
+is grey. Red is a side with finished retopology across it that the patch is not
+welding to — outvoted on a span collision, span typed over since, or released
+by hand — which is exactly where a crack ends up. It used to draw the same grey
+as a side with nothing across it, so the one state worth acting on was hidden
+among the ones that are simply normal, and only the tooltip told them apart.
+Painting *every* unmatched side red is the obvious alternative and it is wrong:
+on the first patch of a model nothing is committed anywhere, so the whole patch
+would come up red with nothing wrong at all — red has to mean a problem or it
+means nothing. `SideReference.applied` (set by `apply_side_matches`, which is
+the only place that knows) and `.available` carry it;
+`overlay._side_appearance` maps it, and `ui._draw_match_block` counts the red
+ones separately and alerts on that count alone. The **tooltip by the cursor**
+uses the same three-way answer: `sidematch.status_of` returns the one wording
+the overlay and the panel both use ("Matched" / "Not matched — this edge will
+crack" / "Nothing to match along this edge", plus why), so the two can't
+disagree about the side under the pointer. The
 tooltip needs the mouse and a draw handler has no event to read it from, so the
 modal leaves it in `overlay.cursor_window` — the same arrangement as
 `hover_committed`, cleared the moment the pointer leaves the viewport.
@@ -1128,9 +1211,8 @@ answer; the margin is for sides you pointed at. The commit re-runs the
 substitution before registering, or the registry would advertise a curvature
 count on a side that was actually matched.
 
-The overlay draws **which vertices a match would take** — dots on the hovered
-side's candidates and on every pinned side's, green from a neighbour and amber
-from the CAD edge. Knowing a side *can* be matched is only half of it; a match
+The overlay draws **which vertices a match would take** — green dots on the
+hovered side's candidates and on every pinned side's. Knowing a side *can* be matched is only half of it; a match
 going to the wrong neighbour or stopping short is invisible from a coloured
 line lying on the boundary. `SideReference` carries world-space copies for
 exactly that, computed at generation time — a draw handler has no business
@@ -1550,8 +1632,10 @@ committed patch to change its spans (replaces it in place).
 
 Also implemented: matching a committed neighbour along a shared side, by
 pointing at it (`M`) or automatically, for every generator and confined to the
-faces the side actually borders; falling back to a side's own CAD
-tessellation when nothing borders it; corner ranking, which keeps a quad a quad when the angle test
+faces the side actually borders, with the side colours saying in three states
+whether each one is matched, unmatched against a committed patch (red, the only
+state that leaves a crack) or simply has nothing across it;
+corner ranking, which keeps a quad a quad when the angle test
 also flags a tessellated curve; the Plasticity edge / B-rep vertex / surface
 flow overlay (`E`, `Ctrl`+`E`); the hand-edit round trip into Blender's Edit
 Mode (`Tab` from `PATCH`), set up for retopology and repaired on the way back;
@@ -1571,7 +1655,8 @@ cuts, **N-Side** with per-side spans and manual corner placement, quad-family
 (solving a chain of connected quads in one click).
 
 Also implemented: **several matches on one N-Side patch**, since its sides no
-longer share a span (`nside.spoke_allocation`).
+longer share a span (`nside.spoke_allocation`); and **cracked borders**, the
+standing report of a shared CAD edge two committed patches failed to close.
 
 Known rough edge: matching one side of a **multi-side ring** sets that loop's
 whole "around" count from that side alone — `span_key_for` now keys a ring per

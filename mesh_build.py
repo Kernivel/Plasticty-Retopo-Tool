@@ -43,6 +43,7 @@ import math
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
+from . import cad_display
 from . import patch_data
 from . import state as state_mod
 
@@ -501,6 +502,7 @@ def repair_manual_edits(
     apply_result_shading(context, result_obj)
     # Every side match reads from this, and the vertices it caches have moved.
     invalidate_boundary_cache()
+    invalidate_crack_cache()
     return adopted, cleared
 
 
@@ -1099,6 +1101,7 @@ def bake_mirror(
 
     apply_result_shading(context, result_obj)
     invalidate_boundary_cache()
+    invalidate_crack_cache()
     return len(mesh.polygons) - faces_before, None
 
 
@@ -1738,6 +1741,331 @@ def committed_boundary_map(source_obj: bpy.types.Object) -> CommittedMap:
         _boundary_cache.pop(next(iter(_boundary_cache)))
     _boundary_cache[key] = (fingerprint, result)
     return result
+
+
+# --- cracked borders -------------------------------------------------------
+#
+# A patch matched to its neighbour welds to it; change one patch's span
+# afterwards and it stops welding, leaving a seam along a border that used to
+# be closed. Nothing showed it. The side picker says so *while* the patch is
+# open -- the side turns red -- but the moment it is committed the warning goes
+# with the session, and the patch that did not change is the one left cracked.
+#
+# What is drawn is the **CAD edge** the two patches share, not either patch's
+# own row of vertices. The two rows sag off that curve by different amounts
+# (that is what a mismatched span is), so drawing them would draw the symptom
+# twice and neither would be the border itself. The edge is the thing both
+# patches were supposed to meet on.
+#
+# Detection reads the source's B-rep edges rather than pairing result vertices
+# by proximity, and that is what keeps it honest: proximity cannot tell "the
+# patch across this edge" from "a patch that happens to run close by" -- the
+# same reason `_match_pool` exists. Two patches are only ever compared along an
+# edge the CAD model says they share.
+#
+# **An open edge belongs to a border only when its *interior* lies along it.**
+# The first version asked "is there an open edge within reach of this point on
+# the border", and a radius cannot answer that: the reach has to be about the
+# size of a retopology cell, and on a bevelled part the next border along is
+# that far away too. Measured on `Cube Bevel Edges`, four perfectly welded
+# borders came back with three of seven samples "covered" -- by open edges
+# belonging to the borders either side of them -- against seven of seven for
+# the two that were genuinely open, which is a threshold sitting in the middle
+# of the thing it is meant to separate.
+#
+# Lying *along* the border is what separates them, and it does so by kind
+# rather than by degree. An open edge of the row along a border sits a chord's
+# sagitta off it -- second order in the cell size, 0.00 to 0.05 of a cell on
+# that same part -- for its whole length. An edge leaving a junction is on the
+# border at one end and a whole cell away at the other, so it fails outright
+# however the tolerance is set.
+#
+# Sampled at the quarter points and **never at the ends**: a junction is where
+# several borders meet, so an endpoint sitting on one of them sits on all of
+# them and answers nothing. That is not a corner case -- a coarse patch commits
+# a whole border as a single edge, whose two ends are both junctions.
+#
+# And the border is chosen **for the edge, not for each probe**: the one whose
+# *furthest* probe is nearest, which is the border the edge lies along rather
+# than the one it happens to touch. Asking each probe separately and requiring
+# them to agree fails wherever a border is shorter than the tolerance -- on
+# `Cube Chamfer Edges` the whole part is four cells wide, so the first probe of
+# a 0.148-long border answered with the border next to it and the disagreement
+# dropped a crack covering all of it.
+
+# How far off the CAD edge an open edge's ends may sit and still be that
+# border's, as a share of the retopology's own cell size. A cap, not the
+# discriminator -- the both-ends rule is that -- so it only has to be loose
+# enough for a coarse row's chords to sag off a curved border, which is far
+# less than a cell.
+CRACK_NEAR_RATIO = 0.5
+# ...floored by a share of the model extent, for the flat case where the
+# sagitta is zero and the only distance left is float rounding.
+CRACK_FLOOR_RATIO = 1e-4
+# How much of a shared edge each side's open row has to cover before the border
+# is called cracked. Both patches tessellate the whole of an edge they share,
+# so a real crack covers essentially all of it from both sides (chords fall a
+# little short of the arc, hence not 1.0); anything that merely brushes past is
+# an order of magnitude below this.
+CRACK_COVERAGE = 0.5
+# Samples along the shared edges, so a huge part cannot make the index
+# unbounded. Same reasoning as `patch_data.NEIGHBOUR_INDEX_POINTS`.
+CRACK_INDEX_POINTS = 200_000
+
+# (patch a, patch b, the shared CAD edge, in the *source* object's local space)
+CrackEdge = tuple[int, int, list[mathutils.Vector]]
+
+_crack_cache: dict[str, tuple[tuple, list["CrackEdge"]]] = {}
+_CRACK_CACHE_LIMIT = 4
+
+
+def invalidate_crack_cache() -> None:
+    _crack_cache.clear()
+
+
+def _open_edges(
+    mesh: bpy.types.Mesh, to_source_local: mathutils.Matrix
+) -> "tuple[list[tuple[mathutils.Vector, mathutils.Vector]], list[int], list[float], float]":
+    """Every result edge with one face on it: its two ends, the owning patch,
+    its length, and the median of those lengths.
+
+    Both ends, not the midpoint: which border an edge belongs to is decided by
+    where *both* of them fall, and a midpoint cannot tell an edge lying along a
+    border from one leaving it at a junction.
+
+    An edge with one face is the retopology saying outright that nothing is
+    joined to it here. Most of them are perfectly normal -- the frontier of
+    what has been retopped so far, or the model's own open boundary -- so this
+    only collects them; which border each belongs to, and whether that border
+    is cracked, is decided against the CAD edges.
+    """
+    owners = _patch_ids_of_faces(mesh)
+    if not owners:
+        return [], [], [], 0.0
+
+    faces_on_edge: dict[tuple[int, int], list[int]] = {}
+    for poly in mesh.polygons:
+        verts = list(poly.vertices)
+        for index, a in enumerate(verts):
+            b = verts[(index + 1) % len(verts)]
+            faces_on_edge.setdefault((a, b) if a < b else (b, a), []).append(poly.index)
+
+    ends = []
+    patch_of = []
+    lengths = []
+    for (a, b), faces in faces_on_edge.items():
+        if len(faces) != 1:
+            continue
+        pa = to_source_local @ mesh.vertices[a].co
+        pb = to_source_local @ mesh.vertices[b].co
+        ends.append((pa, pb))
+        patch_of.append(owners[faces[0]])
+        lengths.append((pb - pa).length)
+
+    ordered = sorted(lengths)
+    median = ordered[len(ordered) // 2] if ordered else 0.0
+    return ends, patch_of, lengths, median
+
+
+def crack_edges(source_obj: bpy.types.Object) -> list["CrackEdge"]:
+    """Shared CAD edges the committed retopology has failed to close.
+
+    Both patches committed, both leaving an open row along the border they
+    share: that is a seam, and it is the one thing about finished retopology
+    that is worth drawing in the viewport. A border with only one side
+    committed is not a crack -- it is simply the next patch, not done yet.
+
+    Cached on the same fingerprints as everything else derived from a mesh:
+    this walks both meshes, and a draw handler runs on every redraw.
+    """
+    result_obj = bpy.data.objects.get(result_object_name_for(source_obj))
+    if result_obj is None or not result_obj.data.polygons:
+        return []
+    source_mesh = source_obj.data
+    if not source_mesh.polygons:
+        return []
+
+    to_source_local = source_obj.matrix_world.inverted() @ result_obj.matrix_world
+    key = result_obj.name
+    fingerprint = (source_obj.name,
+                   patch_data.mesh_fingerprint(source_mesh),
+                   patch_data.mesh_fingerprint(result_obj.data),
+                   tuple(to_source_local[row][col] for row in range(4) for col in range(4)))
+    cached = _crack_cache.get(key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+
+    result = _find_crack_edges(source_mesh, result_obj.data, to_source_local)
+
+    if len(_crack_cache) >= _CRACK_CACHE_LIMIT:
+        _crack_cache.pop(next(iter(_crack_cache)))
+    _crack_cache[key] = (fingerprint, result)
+    return result
+
+
+def _find_crack_edges(
+    source_mesh: bpy.types.Mesh,
+    result_mesh: bpy.types.Mesh,
+    to_source_local: mathutils.Matrix,
+) -> list["CrackEdge"]:
+    """The scan itself, so `crack_edges` is only the cache around it."""
+    from mathutils.kdtree import KDTree
+
+    ends, patch_of, edge_lengths, cell = _open_edges(result_mesh, to_source_local)
+    if not ends:
+        return []       # nothing open anywhere: nothing can be cracked
+
+    committed = {value for value in _patch_ids_of_faces(result_mesh)
+                 if value != NO_PATCH}
+    shared = [(owner, other, polyline)
+              for owner, other, polyline in cad_display.shared_edges(source_mesh)
+              if owner in committed and other in committed and len(polyline) >= 2]
+    if not shared:
+        return []
+
+    low = [min(vertex.co[axis] for vertex in source_mesh.vertices) for axis in range(3)]
+    high = [max(vertex.co[axis] for vertex in source_mesh.vertices) for axis in range(3)]
+    extent = sum((high[axis] - low[axis]) ** 2 for axis in range(3)) ** 0.5
+    near = max(cell * CRACK_NEAR_RATIO, extent * CRACK_FLOOR_RATIO)
+    if near <= 0.0:
+        return []
+
+    tree, sample_owner, spans = _shared_edge_index(shared, near, KDTree)
+    if tree is None:
+        return []
+
+    # An open edge of patch A can only ever be A's side of one of A's own
+    # borders, and it only lies **along** one if its whole interior does.
+    covered: dict[int, dict[int, float]] = {}
+    for index, (start, finish) in enumerate(ends):
+        owner = patch_of[index]
+        edge = _border_along(tree, sample_owner, shared, start, finish, owner, near)
+        if edge is None:
+            continue
+        covered.setdefault(edge, {})
+        covered[edge][owner] = covered[edge].get(owner, 0.0) + edge_lengths[index]
+
+    cracked = []
+    for edge, (owner, other, polyline) in enumerate(shared):
+        sides = covered.get(edge)
+        if not sides:
+            continue
+        wanted = CRACK_COVERAGE * spans[edge]
+        if min(sides.get(owner, 0.0), sides.get(other, 0.0)) >= wanted:
+            cracked.append((owner, other, polyline))
+    return cracked
+
+
+# Where along an open edge it is asked which border it lies on. Interior
+# points only: at an endpoint every border meeting at that junction is equally
+# close, so the answer there is a coin toss between them.
+CRACK_PROBES = (0.25, 0.5, 0.75)
+
+
+def _border_along(
+    tree: Any,
+    sample_owner: list[int],
+    shared: list["CrackEdge"],
+    start: mathutils.Vector,
+    finish: mathutils.Vector,
+    patch: int,
+    near: float,
+) -> int | None:
+    """The border this open edge runs along, or None if it runs along none.
+
+    A border is only in the running if **every** probe is within `near` of it,
+    and among those the winner is the one whose worst probe is nearest. An edge
+    leaving a junction is close to its border at one probe and far at the next,
+    so it never qualifies for that border -- while still qualifying, correctly,
+    for the one it does run along. An edge on the frontier of the retopology,
+    or on the model's own open boundary, qualifies for none and is not a
+    defect.
+    """
+    per_probe = []
+    for fraction in CRACK_PROBES:
+        point = start.lerp(finish, fraction)
+        nearest: dict[int, float] = {}
+        for _co, sample, distance in tree.find_range(point, near):
+            edge = sample_owner[sample]
+            if patch in shared[edge][:2]:
+                if distance < nearest.get(edge, near * 2):
+                    nearest[edge] = distance
+        if not nearest:
+            return None      # this probe is off every border of the patch
+        per_probe.append(nearest)
+
+    common = set(per_probe[0])
+    for nearest in per_probe[1:]:
+        common &= set(nearest)
+    if not common:
+        return None
+    return min(common, key=lambda edge: max(probe[edge] for probe in per_probe))
+
+
+def _shared_edge_index(
+    shared: list["CrackEdge"], near: float, kdtree_class: Any
+) -> "tuple[Any, list[int], list[float]]":
+    """A KD-tree of points along every candidate border, plus their lengths.
+
+    Sampled at one *uniform* spacing rather than per vertex, so the query
+    radius is a constant and each lookup returns a handful of hits -- the same
+    reasoning as `patch_data.resolve_neighbours_by_geometry`, where indexing
+    per segment and searching a multiple of the segment's own length swept a
+    large part of the mesh once per query.
+    """
+    spans = []
+    for _owner, _other, polyline in shared:
+        spans.append(sum((b - a).length for a, b in zip(polyline, polyline[1:])))
+    total = sum(spans)
+    if total <= 0.0:
+        return None, [], spans
+
+    spacing = max(near * 0.5, total / CRACK_INDEX_POINTS)
+    points = []
+    sample_owner = []
+    for edge, (_owner, _other, polyline) in enumerate(shared):
+        for a, b in zip(polyline, polyline[1:]):
+            direction = b - a
+            steps = max(1, int(direction.length / spacing) + 1)
+            for step in range(steps):
+                points.append(a + direction * (step / steps))
+                sample_owner.append(edge)
+        points.append(polyline[-1])
+        sample_owner.append(edge)
+
+    tree = kdtree_class(len(points))
+    for index, point in enumerate(points):
+        tree.insert(point, index)
+    tree.balance()
+    return tree, sample_owner, spans
+
+
+def crack_segments(
+    source_obj: bpy.types.Object, dash: float
+) -> list[mathutils.Vector]:
+    """Cracked borders as dashed point pairs, for one LINES batch.
+
+    Dashed in the geometry rather than by a shader: the builtin polyline shader
+    has no stipple, and a dash pattern computed once per mesh change is nothing
+    next to one computed per redraw. Dashes make the line read as a *warning*
+    rather than as another piece of structure -- the CAD edge overlay draws
+    solid lines along the very same curves.
+    """
+    segments = []
+    for _owner, _other, polyline in crack_edges(source_obj):
+        for a, b in zip(polyline, polyline[1:]):
+            span = (b - a).length
+            if span <= 0.0:
+                continue
+            steps = max(1, int(span / dash))
+            for step in range(steps):
+                if step % 2:
+                    continue
+                start = a.lerp(b, step / steps)
+                end = a.lerp(b, min(1.0, (step + 1) / steps))
+                segments.append(start)
+                segments.append(end)
+    return segments
 
 
 def committed_boundary_points(

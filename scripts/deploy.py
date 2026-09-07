@@ -8,6 +8,7 @@ Blender caches imported modules, so after deploying use the panel's
 "Reload Addon Only" button (or restart Blender) to pick the new code up.
 """
 import argparse
+import datetime
 import os
 import platform
 import shutil
@@ -15,6 +16,17 @@ import sys
 
 ADDON_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDON_NAME = os.path.basename(ADDON_DIR)
+
+# Written into the deployed copy, and the addon reads it on registration to
+# turn Developer Mode on (see prefs.seed_developer_mode). A file rather than
+# anything to do with Blender's preferences, because this script must not need
+# Blender: it copies files, and launching Blender to write one setting would
+# make a deploy depend on the very thing being deployed.
+#
+# It carries a stamp rather than being empty, so each deploy is a *different*
+# marker: Developer Mode comes back on when you deploy again, and stays off in
+# between if you turned it off. An empty file could only ever be seeded once.
+DEV_MARKER_NAME = ".deployed"
 
 # Names never copied into Blender's addons folder -- directories and files
 # alike, since shutil.copytree's ignore callback is handed both. The docs
@@ -28,6 +40,10 @@ SKIP_DIRS = {
     # download is twice the size it should be -- and the builder walks this
     # same list while the zip it is writing already exists on disk.
     "dist",
+    # This script's own marker (below). It belongs to a deployed copy, never to
+    # the source tree or to a release -- and it is in this list, which
+    # build_zip.py imports, so a stray one can never be shipped.
+    DEV_MARKER_NAME,
 }
 
 
@@ -76,6 +92,10 @@ def deploy(dest_addons_dir):
         return {n for n in names if n in SKIP_DIRS or n.endswith(".pyc")}
 
     shutil.copytree(ADDON_DIR, target, ignore=ignore)
+
+    stamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")
+    with open(os.path.join(target, DEV_MARKER_NAME), "w", encoding="utf-8") as handle:
+        handle.write(stamp + "\n")
     return target
 
 
@@ -106,6 +126,7 @@ def main():
 
     target = deploy(dest)
     print(f"Deployed {ADDON_NAME} -> {target}")
+    print("Developer Mode will switch itself on when Blender next loads the addon.")
     print("Enable it in Preferences > Add-ons, then use 'Reload Addon Only' after each change.")
     return 0
 

@@ -25,9 +25,9 @@ To update, install the newer zip over it.
 
 !!! tip "The rest of this page is for working *on* the addon"
 
-    Instead of re-zipping when working on the addon you can switch to the dev mode to use the deploy.py script, 
-    and the reload button in the N-panel.
-    **Developer Mode** is available in the addon's preferences.
+    Instead of re-zipping when working on the addon you can use the `deploy.py`
+    script and the reload button in the N-panel. Both belong to **Developer
+    Mode**, which a deploy switches on for you -- see below.
 
 ## Working from a checkout
 
@@ -40,6 +40,19 @@ python scripts/deploy.py
 `deploy.py` finds Blender's addons folder and copies the package into it, leaving
 out the tests, the scripts and this documentation. Then enable **Plasticity
 Retop** in `Preferences > Add-ons`.
+
+It also leaves a marker in the copy it made, and the addon reads that on load:
+**Developer Mode turns itself on** the next time Blender loads the deployed
+code, and again after every later deploy. Deploying is the statement that this
+is a working copy, so there is nothing further to tick. You can still turn it
+off, and it stays off until the next deploy.
+
+!!! note "The first time, Blender has to load the addon again"
+
+    Nothing can switch a preference on in a Blender that is already running --
+    the deploy only copies files. So on the very first deploy, restart Blender
+    or re-enable the addon; from then on the panel's **Reload Addon Only** is
+    there and does it.
 
 To pick a specific Blender:
 

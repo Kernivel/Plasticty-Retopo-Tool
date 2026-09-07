@@ -165,37 +165,47 @@ check("exactly the pinned side reports itself as matched",
       [r.index for r in matched] == [shared.index], [r.index for r in matched])
 
 title, detail = pr.sidematch.status_of(matched[0], pr.sidematch.PIN_NEIGHBOUR)
-check("and says so in words", title == "Selected for surface matching", title)
+check("and says so in words", title == "Matched", title)
 check("naming the patch it reproduces", "patch" in detail, detail)
 
+# A side with nothing across it is *not* a failure -- it is the normal state of
+# a model being retopologized -- so it must not be worded as one.
 idle = next(r for r in references if not r.applied and not r.available)
 idle_title, idle_detail = pr.sidematch.status_of(idle, None)
-check("a side with nothing to match says it is not selected",
-      idle_title == "Not selected for surface matching", idle_title)
+check("a side with nothing to match says exactly that",
+      idle_title == "Nothing to match along this edge", idle_title)
+check("and does not claim anything will crack",
+      "crack" not in idle_title.lower(), idle_title)
 check("and gives the reason, not just the refusal",
       idle_detail == idle.reason and idle_detail != "", idle_detail)
 
 # The colour is what the user actually reads, so pin the mapping rather than
-# only the flags: green is reserved for a side being reproduced.
-matched_color, matched_width = pr.overlay._side_appearance(
-    matched[0], pr.sidematch.PIN_NEIGHBOUR, False)
-idle_color, _idle_width = pr.overlay._side_appearance(idle, None, False)
+# only the flags. Three states, one question: green is being matched, red is
+# bordering a committed patch and *not* matched -- the only state that is a
+# problem -- and grey is having nothing across it, which is normal.
+matched_color, matched_width = pr.overlay._side_appearance(matched[0], False)
+idle_color, _idle_width = pr.overlay._side_appearance(idle, False)
 check("a matched side is drawn in the matched colour",
       matched_color == pr.overlay.SIDE_MATCHED_COLOR, matched_color)
 check("a side that is not being matched is not drawn green",
       idle_color != pr.overlay.SIDE_MATCHED_COLOR, idle_color)
-# Nor is one under the cursor: hovering used to turn an unmatched side the same
-# green as a matched one, which put the two states one mouse move apart.
-hovered_available = pr.overlay._side_appearance(
-    next(r for r in references if r.available and not r.applied), None, True)[0]     if any(r.available and not r.applied for r in references) else None
-if hovered_available is not None:
-    check("nor is one merely hovered",
-          hovered_available != pr.overlay.SIDE_MATCHED_COLOR, hovered_available)
+check("a side with nothing across it is grey, not red",
+      idle_color == pr.overlay.SIDE_BLOCKED_COLOR, idle_color)
+# Hovering never turns a side green either: that used to put "matched" and
+# "not matched" one mouse move apart.
+check("nor is one merely hovered",
+      pr.overlay._side_appearance(idle, True)[0] != pr.overlay.SIDE_MATCHED_COLOR,
+      pr.overlay._side_appearance(idle, True)[0])
 check("green is only ever a match being reproduced",
-      pr.overlay.SIDE_AVAILABLE_HOVER_COLOR[1]
-      <= max(pr.overlay.SIDE_AVAILABLE_HOVER_COLOR[0],
-             pr.overlay.SIDE_AVAILABLE_HOVER_COLOR[2]),
-      pr.overlay.SIDE_AVAILABLE_HOVER_COLOR)
+      pr.overlay.SIDE_BLOCKED_HOVER_COLOR[1]
+      <= max(pr.overlay.SIDE_BLOCKED_HOVER_COLOR[0],
+             pr.overlay.SIDE_BLOCKED_HOVER_COLOR[2]),
+      pr.overlay.SIDE_BLOCKED_HOVER_COLOR)
+check("and red really is red -- it is the one state worth acting on",
+      pr.overlay.SIDE_UNMATCHED_COLOR[0]
+      > 2 * max(pr.overlay.SIDE_UNMATCHED_COLOR[1],
+                pr.overlay.SIDE_UNMATCHED_COLOR[2]),
+      pr.overlay.SIDE_UNMATCHED_COLOR)
 check("and the matched one is drawn heavier",
       matched_width > pr.overlay.SIDE_WIDTH, matched_width)
 
@@ -208,6 +218,17 @@ released = next(r for r in pr.sidematch.active_sides() if r.index == shared.inde
 check("clicking a matched side stops it being matched", not released.applied)
 check("and the grid goes back to its own spacing",
       shared_boundary_xs(preview) != committed_xs, shared_boundary_xs(preview))
+# Which is exactly the state red is for: retopology across this side, and this
+# patch no longer welding to it. Grey would say "nothing to match here", which
+# is the one thing that is not true of it.
+check("and it is drawn red, because a crack is what that leaves",
+      pr.overlay._side_appearance(released, False)[0]
+      == pr.overlay.SIDE_UNMATCHED_COLOR,
+      pr.overlay._side_appearance(released, False)[0])
+released_title, _released_detail = pr.sidematch.status_of(
+    released, pr.sidematch.PIN_EXCLUDED)
+check("and says the edge will crack, not that there is nothing to match",
+      "crack" in released_title.lower(), released_title)
 
 pr.operators.adopt_side_reference(bpy.context, shared.index)
 preview = bpy.data.objects.get(pr.mesh_build.PREVIEW_OBJ_NAME)
@@ -216,35 +237,36 @@ check("clicking it once more matches it again", rematched.applied)
 check("landing back on the neighbour's vertices",
       shared_boundary_xs(preview) == committed_xs, shared_boundary_xs(preview))
 
+# Matching is binary: a side reproduces the committed patch across it, or it
+# does not. A side with nothing across it has nothing to follow and is refused
+# outright -- there is no third state where it follows its own CAD edge.
 lonely = next(r.index for r in references if not r.available)
 check("a side with no committed neighbour cannot be pinned to one",
       pr.operators.adopt_side_reference(
           bpy.context, lonely, pr.sidematch.PIN_NEIGHBOUR) is None)
-# ...but it can still be pinned to the CAD tessellation of the side itself,
-# which needs no neighbour at all -- that is what makes the first patch of a
-# model matchable.
-check("and can be pinned to the source topology instead",
-      pr.operators.adopt_side_reference(
-          bpy.context, lonely, pr.sidematch.PIN_SOURCE) is not None)
-check("which is recorded as a source pin",
-      json.loads(state.side_overrides).get(str(lonely)) == pr.sidematch.PIN_SOURCE,
+check("nor pinned at all, with no kind given",
+      pr.operators.adopt_side_reference(bpy.context, lonely) is None)
+check("and nothing is recorded for it",
+      json.loads(state.side_overrides).get(str(lonely)) is None,
       state.side_overrides)
-# Clicking it again turns the match *off* rather than merely dropping the pin.
-# Dropping it is what this used to do, and with automatic matching on -- the
-# default -- the automatic match put itself straight back on the next
-# regeneration: the side stayed green and the click read as broken.
-pr.operators.adopt_side_reference(bpy.context, lonely, pr.sidematch.PIN_SOURCE)
-check("and clicking it again releases it, explicitly",
-      json.loads(state.side_overrides).get(str(lonely)) == pr.sidematch.PIN_EXCLUDED,
-      state.side_overrides)
+
+# Releasing and re-matching is the two-state toggle, and it is tested on a side
+# that *has* a neighbour -- the only kind that can be matched at all. Clicking a
+# matched side turns the match off rather than merely dropping the pin: dropping
+# it is what this used to do, and with automatic matching on -- the default --
+# the automatic match put itself straight back on the next regeneration, so the
+# side stayed green and the click read as broken.
+pr.operators.adopt_side_reference(bpy.context, shared.index)
+check("clicking a matched side releases it, explicitly",
+      json.loads(state.side_overrides).get(str(shared.index))
+      == pr.sidematch.PIN_EXCLUDED, state.side_overrides)
 check("which is what stops automatic matching taking it back",
-      lonely not in {r.index for r in pr.sidematch.active_sides() if r.applied},
+      shared.index not in {r.index for r in pr.sidematch.active_sides() if r.applied},
       state.side_overrides)
-pr.operators.adopt_side_reference(bpy.context, lonely, pr.sidematch.PIN_SOURCE)
+pr.operators.adopt_side_reference(bpy.context, shared.index)
 check("and clicking a released side matches it again",
-      json.loads(state.side_overrides).get(str(lonely)) == pr.sidematch.PIN_SOURCE,
-      state.side_overrides)
-pr.operators.adopt_side_reference(bpy.context, lonely, pr.sidematch.PIN_SOURCE)
+      json.loads(state.side_overrides).get(str(shared.index))
+      == pr.sidematch.PIN_NEIGHBOUR, state.side_overrides)
 check("nor can an index that isn't a side",
       pr.operators.adopt_side_reference(bpy.context, 99) is None)
 check("nor can -1, which is what 'nothing hovered' looks like",

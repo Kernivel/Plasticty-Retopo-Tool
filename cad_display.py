@@ -142,6 +142,38 @@ def edge_polylines(
     return _cached(mesh, f"edges:{face_id}", build)
 
 
+def shared_edges(
+    mesh: "bpy.types.Mesh"
+) -> "list[tuple[int, int, list[mathutils.Vector]]]":
+    """Every B-rep edge with a face on *both* sides, as (owner, other, points).
+
+    `edge_polylines` throws the pair away because a drawing only needs the
+    curve; this keeps it, because the question it answers is about the two
+    patches rather than about the edge -- "are these two welded to each other
+    along the edge they share". An outer boundary has no pair and is not here
+    at all: nothing can crack along an edge with one face on it.
+
+    Emitted once per pair, by the same `other < owner` rule and for the same
+    reason: both faces walk their shared edge, and comparing ids is cheaper
+    than remembering which runs have been seen.
+    """
+    def build() -> list[tuple[int, int, list["mathutils.Vector"]]]:
+        analysis = patch_data.analyse(mesh)
+        positions = analysis.positions
+        pairs = []
+        for owner, patch in analysis.patches.items():
+            for loop, neighbours in zip(patch.boundary_loops, patch.boundary_neighbours):
+                for run in _edge_runs(loop, neighbours):
+                    other = neighbours[run[0]]
+                    if other is None or other < owner:
+                        continue
+                    pairs.append(
+                        (owner, other, [positions[loop[i]] for i in run]))
+        return pairs
+
+    return _cached(mesh, "shared_edges", build)
+
+
 def edge_segments(
     mesh: "bpy.types.Mesh", face_id: int | None = None
 ) -> "list[mathutils.Vector]":

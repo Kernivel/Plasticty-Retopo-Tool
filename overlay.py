@@ -65,35 +65,55 @@ DOT_SEGMENTS = 12
 
 # --- side reference picker (M in ADJUST) ---
 #
-# Three states, because the useful question is not "where are the sides" but
-# "which of them can I actually match": one that borders a committed neighbour,
-# one that doesn't, and the one under the cursor.
-# Hover brightens a side's *own* colour instead of replacing it: a single
-# hover colour hid the one thing worth knowing before clicking -- whether this
-# side can be matched at all -- and turned a refusal into a surprise.
-# Four states, not three, and the fourth is the one that was missing: a side
-# that *is* being matched right now. "Could be matched" and "is reproducing the
-# neighbour's vertices" used to draw the same green, so a side that had lost a
-# span collision, or whose span the user had typed since, looked exactly like
-# one the preview was welding to -- which is most of why the feature read as
-# arbitrary. Green now means matched; a side that could be but isn't is grey,
-# like one with nothing to match, and the tooltip tells the two apart.
+# Matching is binary -- a side reproduces the neighbour across it or it does
+# not -- so the colours answer that one question, and the states are what it
+# can return.
+#
+# Green is a side being matched. **Red is the failure**, and it is deliberately
+# narrow: a side bordering a committed neighbour that is *not* reproducing it,
+# because it lost a span collision, because the span was typed over since, or
+# because it was released by hand. That is where a crack will actually be, and
+# it used to draw the same grey as a side with nothing across it -- the one
+# state worth acting on, hidden among the ones that are simply normal.
+# Painting *every* unmatched side red was the alternative, and it says the
+# wrong thing: on the first patch of a model nothing is committed anywhere, so
+# the whole patch would come up red with nothing wrong at all.
+#
+# Grey is that normal: no committed neighbour along this side, nothing to
+# match, nothing to fix.
+#
+# Hover brightens a side's *own* colour instead of replacing it: a single hover
+# colour hid the one thing worth knowing before clicking -- whether this side
+# can be matched at all -- and turned a refusal into a surprise. It is never
+# green, or hovering an unmatched side would look like matching it.
 SIDE_MATCHED_COLOR = (0.25, 0.95, 0.45, 0.95)
 SIDE_MATCHED_HOVER_COLOR = (0.60, 1.0, 0.75, 1.0)
-SIDE_SOURCE_COLOR = (1.0, 0.72, 0.25, 0.95)        # matched to its own CAD edge
-SIDE_SOURCE_HOVER_COLOR = (1.0, 0.85, 0.55, 1.0)
-SIDE_AVAILABLE_COLOR = (0.55, 0.60, 0.58, 0.55)    # could be matched, isn't
-# Bright, but *not* green: hovering a side that is not being matched used to
-# turn it the same green as one that is, which put the two states one mouse
-# move apart and undid most of what the colours are for. White reads as "the
-# cursor is here"; whether clicking would match or refuse is the tooltip's
-# answer, and the red below is the refusal.
-SIDE_AVAILABLE_HOVER_COLOR = (0.92, 0.94, 0.96, 1.0)
-SIDE_BLOCKED_COLOR = (0.42, 0.42, 0.45, 0.45)
-SIDE_BLOCKED_HOVER_COLOR = (0.75, 0.40, 0.35, 0.95)  # red: clicking will refuse
+SIDE_UNMATCHED_COLOR = (0.90, 0.28, 0.24, 0.95)      # borders a committed patch, unmatched
+SIDE_UNMATCHED_HOVER_COLOR = (1.0, 0.55, 0.50, 1.0)
+SIDE_BLOCKED_COLOR = (0.42, 0.42, 0.45, 0.45)        # nothing across it: normal
+SIDE_BLOCKED_HOVER_COLOR = (0.92, 0.94, 0.96, 1.0)
 SIDE_WIDTH = 3.0
 SIDE_MATCHED_WIDTH = 4.5
 SIDE_HOVER_WIDTH = 6.0
+
+# --- cracked borders -------------------------------------------------------
+#
+# Same red as an unmatched side, because it is the same failure seen later: the
+# side picker says it while the patch is open, this says it once the patch has
+# been committed and the session has moved on. Dashed, and that is the whole
+# reason it is legible -- the CAD edge overlay draws a solid line along the
+# very same curve, so a solid red one would read as another piece of structure
+# rather than as a warning. Dimmer than a side, too: it is a standing report on
+# work already done, not the thing under the cursor.
+CRACK_ALPHA = 0.85
+CRACK_WIDTH = 2.5
+CRACK_HOVER_WIDTH = 4.5
+# Dash length in *world* units, as a share of the model extent: a dash pattern
+# in pixels would need the view matrix on every redraw, and one in absolute
+# units is either invisible on a small part or a solid line on a large one.
+CRACK_DASH_RATIO = 0.004
+# How near the cursor has to be, in pixels, to name a cracked border.
+CRACK_HOVER_PIXELS = 12.0
 
 # --- the tooltip on the hovered side ---
 #
@@ -115,7 +135,6 @@ TOOLTIP_OFFSET = 18   # from the cursor, so the pointer never covers the text
 # none of that is visible from a coloured line lying on the boundary. Drawn for
 # the side under the cursor and for every side already pinned.
 MATCH_DOT_COLOR = (0.35, 1.0, 0.55, 1.0)         # from a committed neighbour
-SOURCE_DOT_COLOR = (1.0, 0.72, 0.25, 1.0)        # from the CAD tessellation
 MATCH_DOT_OUTLINE = (0.05, 0.05, 0.05, 0.9)
 MATCH_DOT_SIZE = 9.0
 MATCH_DOT_OUTLINE_RATIO = 1.5
@@ -348,6 +367,10 @@ def _draw() -> None:
 
     scale = max(0.5, getattr(state, "overlay_scale", 1.0))
     _draw_side_tooltip(state, region, scale)
+    # Only when the side picker has not already spoken: a side under the cursor
+    # is the patch being worked on, and two boxes at one pointer is neither.
+    if not _side_tooltip_shown(state):
+        _draw_crack_tooltip(context, state, region, scale)
 
     font_id = 0
     _set_font_size(font_id, FONT_SIZE * scale)
@@ -434,7 +457,6 @@ def _draw_side_references(state: "state_mod.RetopPatchState") -> None:
         return
 
     hovered = getattr(state, "hovered_side", -1)
-    pins = sidematch.side_override_map(state)
     shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
     viewport = gpu.state.viewport_get()
     shader.bind()
@@ -448,8 +470,7 @@ def _draw_side_references(state: "state_mod.RetopPatchState") -> None:
         if len(reference.points) < 2:
             continue
         is_hovered = reference.index == hovered
-        color, width = _side_appearance(
-            reference, pins.get(reference.index), is_hovered)
+        color, width = _side_appearance(reference, is_hovered)
         shader.uniform_float("lineWidth", width)
         shader.uniform_float("color", color)
         batch_for_shader(shader, 'LINE_STRIP', {"pos": reference.points}).draw(shader)
@@ -458,27 +479,29 @@ def _draw_side_references(state: "state_mod.RetopPatchState") -> None:
 
 
 def _side_appearance(
-    reference: "sidematch.SideReference", pin_kind: str | None, hovered: bool
+    reference: "sidematch.SideReference", hovered: bool
 ) -> "tuple[tuple[float, float, float, float], float]":
     """(colour, line width) for one side of the picker.
 
-    Green is reserved for a side whose vertices the preview is *actually*
-    reproducing; amber for one following its own CAD edge. Everything else is
-    grey, whether it could be matched or not -- the difference between those
-    two is what the tooltip is for, and painting them the same green was what
-    made a match look applied when it was not.
+    Green is a side whose vertices the preview is *actually* reproducing, red
+    one that borders a committed neighbour and is not, grey one with nothing
+    across it to match. Only the red is a problem, which is the whole reason it
+    is red: "could be matched but is not" and "has nothing to match" used to
+    draw the same grey, and only the tooltip told them apart.
     """
     if reference.applied:
-        if pin_kind == sidematch.PIN_SOURCE:
-            return ((SIDE_SOURCE_HOVER_COLOR if hovered else SIDE_SOURCE_COLOR),
-                    SIDE_HOVER_WIDTH if hovered else SIDE_MATCHED_WIDTH)
         return ((SIDE_MATCHED_HOVER_COLOR if hovered else SIDE_MATCHED_COLOR),
                 SIDE_HOVER_WIDTH if hovered else SIDE_MATCHED_WIDTH)
     if reference.available:
-        return ((SIDE_AVAILABLE_HOVER_COLOR if hovered else SIDE_AVAILABLE_COLOR),
-                SIDE_HOVER_WIDTH if hovered else SIDE_WIDTH)
+        return ((SIDE_UNMATCHED_HOVER_COLOR if hovered else SIDE_UNMATCHED_COLOR),
+                SIDE_HOVER_WIDTH if hovered else SIDE_MATCHED_WIDTH)
     return ((SIDE_BLOCKED_HOVER_COLOR if hovered else SIDE_BLOCKED_COLOR),
             SIDE_HOVER_WIDTH if hovered else SIDE_WIDTH)
+
+
+# Red, like the border it names and like an unmatched side: three places, one
+# meaning.
+TOOLTIP_CRACK = (1.0, 0.55, 0.5, 1.0)
 
 
 def _draw_side_tooltip(
@@ -503,6 +526,25 @@ def _draw_side_tooltip(
 
     pins = sidematch.side_override_map(state)
     title, detail = sidematch.status_of(reference, pins.get(index))
+    _draw_tooltip_box(region, scale, title, detail,
+                      TOOLTIP_MATCHED if reference.applied else TOOLTIP_TEXT)
+
+
+def _draw_tooltip_box(
+    region: bpy.types.Region,
+    scale: float,
+    title: str,
+    detail: str,
+    title_color: tuple[float, float, float, float],
+) -> None:
+    """Two lines in a box by the cursor.
+
+    Shared, not copied: the side picker and the cracked-border report both
+    speak from the pointer, and two boxes drawn by two functions end up
+    disagreeing about padding the first time either is touched.
+    """
+    if cursor_window is None:
+        return
 
     font_id = 0
     _set_font_size(font_id, FONT_SIZE * scale)
@@ -523,13 +565,87 @@ def _draw_side_tooltip(
 
     _draw_filled_rect(x, y, width, height, TOOLTIP_BG)
 
-    blf.color(font_id, *(TOOLTIP_MATCHED if reference.applied else TOOLTIP_TEXT))
+    blf.color(font_id, *title_color)
     blf.position(font_id, x + pad, y + pad + line - 6 * scale, 0)
     blf.draw(font_id, title)
 
     blf.color(font_id, *TOOLTIP_DETAIL)
     blf.position(font_id, x + pad, y + pad - 6 * scale, 0)
     blf.draw(font_id, detail)
+
+
+def _crack_under_cursor(
+    context: bpy.types.Context,
+    state: "state_mod.RetopPatchState",
+    region: bpy.types.Region,
+) -> "tuple[int, int] | None":
+    """The two patches of the cracked border under the pointer, if any.
+
+    Screen space, like the side picker and for the same reason: the line lies
+    exactly on the surface, so a raycast hits the surface beside it as often as
+    the line itself.
+
+    Walked only when there *are* cracks, which is the exceptional case -- on
+    retopology that welded, this returns after one empty list.
+    """
+    obj = _crack_source(state)
+    if obj is None or cursor_window is None:
+        return None
+    cracks = mesh_build.crack_edges(obj)
+    if not cracks:
+        return None
+
+    rv3d = context.region_data
+    if rv3d is None:
+        return None
+    matrix = obj.matrix_world
+    mouse = (cursor_window[0] - region.x, cursor_window[1] - region.y)
+    limit = CRACK_HOVER_PIXELS * max(0.5, getattr(state, "overlay_scale", 1.0))
+
+    best = None
+    best_distance = limit
+    for owner, other, polyline in cracks:
+        for point in polyline:
+            screen = view3d_utils.location_3d_to_region_2d(region, rv3d, matrix @ point)
+            if screen is None:
+                continue
+            distance = math.hypot(screen[0] - mouse[0], screen[1] - mouse[1])
+            if distance < best_distance:
+                best_distance = distance
+                best = (owner, other)
+    return best
+
+
+def _draw_crack_tooltip(
+    context: bpy.types.Context,
+    state: "state_mod.RetopPatchState",
+    region: bpy.types.Region,
+    scale: float,
+) -> None:
+    """Name the two patches of the crack under the cursor, and what to do.
+
+    The dashes say *where*; only this says which two patches disagree, and a
+    seam you cannot attribute is one you cannot fix -- the border looks the
+    same from both sides.
+    """
+    if not getattr(state, "show_cracks", True):
+        return
+    pair = _crack_under_cursor(context, state, region)
+    if pair is None:
+        return
+    owner, other = pair
+    _draw_tooltip_box(
+        region, scale, "Cracked border",
+        f"patches {owner} and {other} are both retopologized but not welded — "
+        "re-open either and match this side",
+        TOOLTIP_CRACK)
+
+
+def _side_tooltip_shown(state: "state_mod.RetopPatchState") -> bool:
+    """Whether `_draw_side_tooltip` just drew something."""
+    if state.session_phase != 'ADJUST' or not getattr(state, "match_mode", False):
+        return False
+    return 0 <= getattr(state, "hovered_side", -1) < len(sidematch.active_sides())
 
 
 def _draw_points() -> None:
@@ -548,6 +664,7 @@ def _draw_points() -> None:
     # Drawn in every phase, unlike the side highlight: the CAD structure is what
     # you read *while choosing* a surface, not only while adjusting one.
     _draw_cad_structure(context, state)
+    _draw_cracked_borders(context, state)
 
     if state.session_phase != 'ADJUST':
         return
@@ -574,18 +691,14 @@ def _match_dot_sets(
     sets = []
     for reference in references:
         kind = pins.get(reference.index)
-        if kind == sidematch.PIN_SOURCE:
-            sets.append((reference.source_world, SOURCE_DOT_COLOR))
-        elif kind == sidematch.PIN_NEIGHBOUR and reference.match_world:
+        if kind == sidematch.PIN_NEIGHBOUR and reference.match_world:
             sets.append((reference.match_world, MATCH_DOT_COLOR))
-        elif reference.index == hovered and kind in (None, sidematch.PIN_EXCLUDED):
-            # Nothing being matched here: preview whichever set a click would
-            # take. Including a side released by hand -- the dots are what
-            # clicking it again would bring back.
-            if reference.match_world:
-                sets.append((reference.match_world, MATCH_DOT_COLOR))
-            elif reference.source_world:
-                sets.append((reference.source_world, SOURCE_DOT_COLOR))
+        elif (reference.index == hovered and reference.match_world
+              and kind in (None, sidematch.PIN_EXCLUDED)):
+            # Nothing being matched here: preview what a click would take.
+            # Including a side released by hand -- the dots are what clicking
+            # it again would bring back.
+            sets.append((reference.match_world, MATCH_DOT_COLOR))
     return sets
 
 
@@ -628,6 +741,56 @@ def _draw_match_points(
             batch_for_shader(shader, 'TRIS', {"pos": vertices},
                              indices=indices).draw(shader)
 
+    gpu.state.blend_set('NONE')
+
+
+def _crack_source(
+    state: "state_mod.RetopPatchState"
+) -> "bpy.types.Object | None":
+    """The session's source object, when it has retopology to be cracked."""
+    obj = bpy.data.objects.get(getattr(state, "session_object_name", ""))
+    if obj is None or obj.type != 'MESH' or not obj.data.get("face_ids"):
+        return None
+    return obj
+
+
+def _crack_extent(obj: "bpy.types.Object") -> float:
+    """The source object's diagonal, in its own local units."""
+    low = [min(corner[axis] for corner in obj.bound_box) for axis in range(3)]
+    high = [max(corner[axis] for corner in obj.bound_box) for axis in range(3)]
+    return sum((high[axis] - low[axis]) ** 2 for axis in range(3)) ** 0.5
+
+
+def _draw_cracked_borders(
+    context: bpy.types.Context, state: "state_mod.RetopPatchState"
+) -> None:
+    """POST_VIEW: the borders two committed patches failed to close.
+
+    Drawn in every phase and through the model unconditionally. Both are
+    deliberate: a crack is a defect in finished work, so it has to be visible
+    while picking the next patch -- which is when it can still be acted on --
+    and one hidden behind the part it is in is a warning that only reaches
+    somebody already looking at it.
+    """
+    if not getattr(state, "show_cracks", True):
+        return
+    obj = _crack_source(state)
+    if obj is None:
+        return
+
+    dash = _crack_extent(obj) * CRACK_DASH_RATIO
+    if dash <= 0.0:
+        return
+    segments = mesh_build.crack_segments(obj, dash)
+    if not segments:
+        return
+
+    matrix = obj.matrix_world
+    colour = tuple(getattr(state, "crack_color", (1.0, 0.25, 0.2)))
+    gpu.state.blend_set('ALPHA')
+    gpu.state.depth_test_set('NONE')
+    _draw_line_batch([matrix @ point for point in segments],
+                     colour + (CRACK_ALPHA,), CRACK_WIDTH)
     gpu.state.blend_set('NONE')
 
 

@@ -254,12 +254,11 @@ def adopt_side_reference(
     them. Which span that turns out to be is the generator's business (see
     `span_key_for`).
 
-    Two things a side can be pinned to. `sidematch.PIN_NEIGHBOUR` follows the committed
-    patch across it, which is what welds two patches together. `sidematch.PIN_SOURCE`
-    follows the CAD tessellation of the side itself -- no neighbour needed, so
-    it works on the very first patch of a model and on any side facing nothing
-    yet, and it is what keeps a feature the even resampling would cut across.
-    Given no `kind`, the neighbour is preferred and the source is the fallback.
+    There is one thing a side can be pinned to: `sidematch.PIN_NEIGHBOUR`, the
+    committed patch across it, which is what welds two patches together. A side
+    with nothing committed across it cannot be pinned at all -- matching is
+    binary, and there is no third state where a side follows something that is
+    not a neighbour.
 
     **A click on a side that is already being matched turns the match off**
     (`sidematch.PIN_EXCLUDED`), rather than merely releasing the pin. Releasing
@@ -278,10 +277,8 @@ def adopt_side_reference(
     reference = references[flat_index]
 
     if kind is None:
-        kind = sidematch.PIN_NEIGHBOUR if reference.available else sidematch.PIN_SOURCE
+        kind = sidematch.PIN_NEIGHBOUR
     if kind == sidematch.PIN_NEIGHBOUR and not reference.available:
-        return None
-    if kind == sidematch.PIN_SOURCE and len(reference.source_points) < 2:
         return None
 
     overrides = sidematch.side_override_map(state)
@@ -1151,9 +1148,6 @@ def _match_report(
         return f"Side {reference.in_loop} released -- not matched"
     if kind is None:
         return f"Side {reference.in_loop} released"
-    if kind == sidematch.PIN_SOURCE:
-        return (f"Side {reference.in_loop} follows the CAD edge: "
-                f"{reference.source_span} segment(s)")
     neighbour = ("patch " + str(reference.neighbour)) if reference.neighbour is not None \
         else "its neighbour"
     conflict = ""
@@ -2030,23 +2024,16 @@ class RETOP_OT_delete_patch(bpy.types.Operator):
 class RETOP_OT_pin_side(bpy.types.Operator):
     """Pin the side under the cursor to the vertices it should reproduce.
 
-    Two bindings, one operator: a bare click follows the committed neighbour
-    across the side, Ctrl+click follows the side's own CAD tessellation. The
-    modal hands the click over whenever a side is actually under the cursor --
-    the *fallback* (nothing under it, so commit) is what depends on the hover,
-    not this.
+    A click follows the committed neighbour across the side; a side with
+    nothing committed across it has nothing to follow and is refused. The modal
+    hands the click over whenever a side is actually under the cursor -- the
+    *fallback* (nothing under it, so commit) is what depends on the hover, not
+    this.
     """
     bl_idname = "retop.pin_side"
     bl_label = "Pin Side"
-    bl_description = ("Match the side under the cursor: to the committed neighbour across it, or "
-                      "with Source, to the side's own CAD tessellation")
+    bl_description = "Match the side under the cursor to the committed neighbour across it"
     bl_options = {'REGISTER'}
-
-    source: bpy.props.BoolProperty(
-        name="Source",
-        description="Follow the side's own CAD edge rather than a committed neighbour",
-        default=False,
-    )
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
@@ -2056,8 +2043,7 @@ class RETOP_OT_pin_side(bpy.types.Operator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         state = context.scene.plasticity_retop
-        kind = sidematch.PIN_SOURCE if self.source else None
-        adopted = adopt_side_reference(context, state.hovered_side, kind)
+        adopted = adopt_side_reference(context, state.hovered_side)
         if adopted is None:
             references = sidematch.active_sides()
             reason = (references[state.hovered_side].reason
