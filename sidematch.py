@@ -217,10 +217,16 @@ def build_side_references(
             strict = mesh_build.side_match_tolerance(
                 state, side, reference_length=reference_length)
             rivals = [other for other in all_sides if other is not side]
+            # `partial` on the picker's answer only. A neighbour covering
+            # part of a side is completed at its own spacing (see
+            # `match_side_to_points`), and that is a real decision about the
+            # rest of the side -- so it is taken when you point at the side and
+            # not on every side of every patch you hover past. Automatic
+            # matching keeps the strict answer, as it does for the margin.
             match_points, reason = mesh_build.match_side_to_points(
                 pool, side, mesh_build.side_match_tolerance(
                     state, side, margin=True, reference_length=reference_length),
-                merge=strict, rivals=rivals)
+                merge=strict, rivals=rivals, partial=True)
             strict_points, _strict_reason = mesh_build.match_side_to_points(
                 pool, side, strict, merge=strict, rivals=rivals)
             if not pool:

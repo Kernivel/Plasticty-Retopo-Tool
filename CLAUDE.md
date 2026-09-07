@@ -938,6 +938,89 @@ matched without trouble. And "found one point" is reported as its own reason
 rather than "no neighbour": a side shorter than the neighbour's vertex spacing
 genuinely has nothing to follow, and saying which of the two it is matters.
 
+**The generator a patch was committed with is recorded, and that is what
+makes "copy that one's density" answerable.** `register_patch_settings` stores
+`{span_u, span_v, span, generator}` per face id; the re-edit path already read
+the spans back, and `copy_spans_from` reads the generator too.
+`Ctrl`+click in `ADJUST` raycasts the patch under the cursor and takes its
+spans -- **only** when the two patches were built by the same generator, which
+is the whole of the rule: a Ring's two counts mean around and across, a Quad's
+mean its own U and V, an N-Side's single one means segments per side, so the
+same number carried across is a number rather than a density. The refusal names
+both. This is the half that propagation cannot do: propagation is about a
+*shared boundary*, where two patches must agree or crack, and two patches that
+never touch have no such constraint for the mesh to derive.
+**A click carrying a modifier is a binding, and the modal has to dispatch it.**
+Clicks are held out of `_dispatch_bound` at the top of `_modal` on purpose --
+a plain one means "the thing under the cursor", which only the picker can
+resolve -- but that exclusion swallowed *modified* clicks too, so `Ctrl`+click
+fell through to the commit fallback and left `ADJUST` with nothing copied. The
+dispatch is attempted again just before that fallback, which is safe for the
+plain click as well: the picker has already had it, `pin_neighbour` polls on a
+side being under the cursor, and with none there nothing runs and the fallback
+still commits.
+
+**And the hover says what the click would take.** A colour that only appears
+after the click is a colour that answers a question nobody can ask any more, so
+the modal writes `state.copy_hover_face_id` on every mouse move in `ADJUST`
+(one raycast, the same one the `PATCH` phase already pays for) and the overlay
+outlines that patch with `cad_display.edge_segments`, which is cached per
+patch -- a hover may not walk a mesh. Amber, the colour the sides gave up when
+matching became binary: this is not a state of the patch being adjusted, so it
+must not land anywhere on the matched/unmatched scale. It is drawn **dimmed
+rather than not at all** when the generators disagree, because an outline that
+appears only over a valid target makes a refusal indistinguishable from a
+target that was never there; the tooltip then says which of the two it is.
+`mesh_build.copy_source_status` is that wording, and it lives there rather than
+in `operators` because the **overlay** asks it and the overlay may not reach
+into operators.
+
+The click reads `overlay.cursor_window` rather than an event -- a SESSION
+action is dispatched by the modal, which does not hand the operator its event,
+the same arrangement the side tooltip has -- so `ray_from_event` is now a thin
+wrapper on `ray_from_window`. **Between two Quads the U/V axes are each patch's own, and clicking the same
+patch again is what resolves them.** Which direction is U comes from where the
+boundary walk started, so a copy lands rotated about half the time and nothing
+in either patch says which half in advance -- there is no rule to get right
+here, only a way to turn it over. `state.copy_source_face_id` /
+`copy_source_swapped` carry that, cleared by `set_active_patch` with the rest
+of the per-patch state (kept, the first click on the *next* patch would come
+back swapped). A ring never needs it and a single-span generator has nothing
+to exchange, which is reported rather than ignored. The tooltip shows the
+spans **as the next click would apply them**, so it previews the click instead
+of describing the record.
+
+**A neighbour covering part of a side is completed, not refused — and only
+when you point at it.** A bore's rim is one long cornerless side and the patch
+beside it may touch an eighth of it; matching used to refuse outright. What it
+was right to refuse is matching a *count* over a partial cover, which lands
+between the neighbour's vertices everywhere except by luck — that is the
+half-cell offset the coverage rules exist to prevent. Reproducing the
+neighbour's vertices where it reaches and **filling the rest at its own
+spacing**, along the side's own polyline, has no offset to leave: the shared
+stretch is exact and the remainder borders nothing.
+`match_side_to_points(partial=True)` is that, `_complete_open_side` and
+`_complete_closed_side` do it, and `build_side_references` passes it on the
+**margin** call only — the picker's answer. Automatic matching keeps the strict
+one, for the same reason it does not take the margin: how to divide the rest of
+a side is a decision, not something to do to every side of every patch a hover
+passes over. An open side keeps its own endpoints exactly, because those are
+corners welded by *identity*; a closed one has none to keep, so the whole
+remainder is one gap and it is filled as one arc **through the loop's start**,
+which is wherever the half-edge walk began and which nothing else in the model
+agrees on. `MAX_MATCHED_SEGMENTS` is a backstop, not a rule.
+
+**A closed side's gaps are arc lengths, not chords.** `_close_matched_ring`
+compared straight-line distances between consecutive matched points against a
+share of the loop's *arc* length, and on a loop those two diverge without
+limit: a neighbour covering an eighth of a rim leaves a gap of seven eighths,
+but the chord closing it is shorter than the rim's diameter — 0.44 against a
+6.28 perimeter, i.e. 7% of the loop where the truth is 93%. So that neighbour
+read as covering the whole rim and the rim came back built from the eighth of
+it the neighbour had touched. Measured along the side, the same case refuses
+(or is completed, above). No fixture number moves: every object's open-edge
+count is unchanged, which is what says this only ever fired where it was wrong.
+
 **A closed side has one endpoint, not two.** A cornerless loop — a ring's rims,
 a disc's boundary — comes back from `resolve_side_points` as `loop + [loop[0]]`,
 so requiring a committed vertex "at both ends" asks for two in the same place

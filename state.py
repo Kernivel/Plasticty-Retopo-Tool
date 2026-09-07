@@ -456,6 +456,18 @@ class RetopPatchState(bpy.types.PropertyGroup):
     # Index into the active patch's flattened side list (all loops, in order),
     # or -1. Written by the modal on mouse move, read by the overlay.
     hovered_side: bpy.props.IntProperty(name="Hovered Side", default=-1)
+    # The committed patch under the cursor while another one is being adjusted,
+    # or -1: the one Ctrl+click would take a density from. Written by the modal
+    # on mouse move, read by the overlay, and never anything to act on by
+    # itself -- what the click does is decided when the click happens.
+    copy_hover_face_id: bpy.props.IntProperty(name="Copy Source", default=-1)
+    # The patch this one last copied a density from, and whether that copy was
+    # taken with the two spans exchanged. Clicking the same patch again turns
+    # that over -- which is the only way to resolve U against V, since neither
+    # patch has an opinion the other can read (see `copy_spans_from`). Per
+    # patch: cleared with the rest of it by `set_active_patch`.
+    copy_source_face_id: bpy.props.IntProperty(name="Copied From", default=-1)
+    copy_source_swapped: bpy.props.BoolProperty(name="Copied Swapped", default=False)
     # {flat side index: segment count} as JSON, for N-gon mode -- a grid has
     # nowhere to put a per-side count, so adopting a reference there writes
     # span_u/span_v/span directly. Cleared whenever the active patch changes.

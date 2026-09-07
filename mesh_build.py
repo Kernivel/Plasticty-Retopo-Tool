@@ -44,6 +44,7 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from . import cad_display
+from . import constants
 from . import patch_data
 from . import state as state_mod
 
@@ -215,6 +216,56 @@ def register_patch_settings(
         "generator": generator_name,
     }
     save_patch_settings_table(result_obj, table)
+
+
+def copy_source_status(
+    state: state_mod.RetopPatchState,
+    source_obj: bpy.types.Object | None,
+    face_id: int,
+) -> tuple[str, str]:
+    """(title, detail) for a committed patch offered as a density to copy.
+
+    Here rather than in `operators` because the **overlay** asks it, on every
+    redraw while a patch is open, and the overlay may not reach into operators
+    -- that import only goes one way (see the module table in CLAUDE.md). It
+    needs nothing from a session beyond the state it is handed.
+
+    One wording for the viewport tooltip and for what the click reports
+    afterwards: a promise made before a click and a different sentence after it
+    is how the side picker's colours went wrong once already.
+    """
+    stored = lookup_patch_settings(source_obj, face_id) if source_obj else None
+    if not stored:
+        return "", ""
+
+    source_generator = stored.get("generator") or "?"
+    if source_generator != state.generator_name:
+        return (f"Patch {face_id}: {source_generator}",
+                f"a {source_generator}'s spans mean something else on "
+                f"a {state.generator_name or 'this patch'}")
+
+    two_spans = source_generator in constants.TWO_SPAN_GENERATORS
+    already = state.copy_source_face_id == face_id
+    swapped = already and state.copy_source_swapped
+
+    spans = []
+    if two_spans:
+        # Shown the way the *next* click would apply them, so the tooltip is a
+        # preview of the click rather than a description of the record.
+        u, v = stored.get("span_u"), stored.get("span_v")
+        if already and not swapped:
+            u, v = v, u
+        spans = [f"U={u}", f"V={v}"]
+    elif stored.get("span"):
+        spans = [f"span={stored.get('span')}"]
+
+    if already and two_spans:
+        title = (f"Copy from patch {face_id} again"
+                 if swapped else f"Swap U/V from patch {face_id}")
+        detail = ", ".join(spans)
+        return title, detail
+    return (f"Copy density from patch {face_id}",
+            ", ".join(spans) if spans else source_generator)
 
 
 def lookup_patch_settings(
@@ -2122,6 +2173,7 @@ def match_side_to_points(
     tolerance: float,
     merge: float | None = None,
     rivals: "list[list[mathutils.Vector]] | None" = None,
+    partial: bool = False,
 ) -> tuple[list[mathutils.Vector] | None, str]:
     """Which of `pool` lie along this side, in order, or (None, reason).
 
@@ -2147,6 +2199,17 @@ def match_side_to_points(
     surface instead of following the edge under the cursor. A shared corner is
     equally near both sides, so the test is by a clear `merge` margin and keeps
     it.
+
+    `partial` accepts a neighbour that covers only part of the side, and
+    **completes** it: the covered stretch keeps the neighbour's own vertices,
+    the rest is filled in at the neighbour's own spacing, along this side's own
+    polyline. That is a different thing from matching a *count* over a partial
+    cover, which is what the endpoint rule below refuses and will go on
+    refusing -- a count alone lands between the neighbour's vertices and leaves
+    the half-cell offset the whole feature exists to close. Reproducing the
+    vertices where the neighbour is, and choosing the rest freely, has no
+    offset to leave: the shared stretch is exact and the remainder borders
+    nothing.
 
     `reason` says which check refused -- an opaque "nothing to match" on a side
     that visibly touches a retopologized neighbour is impossible to act on.
@@ -2197,16 +2260,19 @@ def match_side_to_points(
     # then asks for two at the same place and always refuses, which is why a
     # bore's rim read as unmatchable while visibly bordering retopology.
     if (side_points[0] - side_points[-1]).length <= tolerance:
-        return _close_matched_ring(ordered, side_points, tolerance)
-
+        return _close_matched_ring(ordered, side_points, tolerance, partial)
 
     # Endpoint coverage: without it a neighbour touching part of the side hands
     # back a count that cannot line up along the rest -- the silent half-cell
-    # offset this exists to prevent.
-    if (ordered[0] - side_points[0]).length > tolerance:
-        return None, "neighbour stops short of this side's start"
-    if (ordered[-1] - side_points[-1]).length > tolerance:
-        return None, "neighbour stops short of this side's end"
+    # offset this exists to prevent. Unless the rest is *filled in* rather than
+    # counted, which is what `partial` does.
+    short_start = (ordered[0] - side_points[0]).length > tolerance
+    short_end = (ordered[-1] - side_points[-1]).length > tolerance
+    if short_start or short_end:
+        if not partial:
+            return None, ("neighbour stops short of this side's start"
+                          if short_start else "neighbour stops short of this side's end")
+        return _complete_open_side(ordered, side_points)
 
     return ordered, ""
 
@@ -2246,14 +2312,118 @@ def _nearest_row(
 # already leaves 22% between points -- while one covering half the rim leaves
 # one huge gap among small ones. Testing the share alone refused coarse but
 # perfectly matchable neighbours.
+#
+# **Measured along the side, never as the straight line between two points.**
+# The share is of the loop's arc length, so the gaps have to be arc lengths
+# too, and on a loop the two diverge without limit: a neighbour covering an
+# eighth of a bore's rim leaves a gap of seven eighths, but the *chord* closing
+# it is shorter than the rim's own diameter -- 0.44 against a 6.28 perimeter in
+# `tests/test_partial_match.py`, i.e. 7% of the loop where the truth is 93%.
+# So that neighbour read as covering the whole rim, and the rim came back built
+# from the eighth of it the neighbour had touched.
 CLOSED_SIDE_MAX_GAP = 0.25
 CLOSED_SIDE_GAP_RATIO = 3.0
+
+
+# A partial match fills what the neighbour does not cover at the neighbour's
+# own spacing, and a side cannot be given more segments than this however fine
+# the neighbour is against however long the side. Only a backstop: it is
+# reached by a neighbour two orders of magnitude finer than the side it borders,
+# which is a mesh worth refusing rather than a case worth serving.
+MAX_MATCHED_SEGMENTS = 512
+
+
+def _run_spacing(ordered: list[mathutils.Vector]) -> float:
+    """The neighbour's own vertex spacing along the stretch it covers.
+
+    The *median* step, not the mean: a run picked up across a corner has one
+    long step in it, and the mean would spread that over the whole fill.
+    """
+    steps = sorted((b - a).length for a, b in zip(ordered, ordered[1:]))
+    steps = [step for step in steps if step > 0.0]
+    return steps[len(steps) // 2] if steps else 0.0
+
+
+def _cumulative(points: list[mathutils.Vector]) -> list[float]:
+    walked = [0.0]
+    for a, b in zip(points, points[1:]):
+        walked.append(walked[-1] + (b - a).length)
+    return walked
+
+
+def _along(
+    points: list[mathutils.Vector], walked: list[float], distance: float
+) -> mathutils.Vector:
+    """The point `distance` along a polyline, by arc length.
+
+    Along the *side's own polyline*, never along a chord between the two
+    matched points either side of the gap: the filled points have to sit on the
+    boundary the CAD drew, or the patch's edge cuts across the surface.
+    """
+    distance = min(max(distance, 0.0), walked[-1])
+    for index in range(len(walked) - 1):
+        span = walked[index + 1] - walked[index]
+        if span <= 0.0:
+            continue
+        if walked[index + 1] >= distance:
+            return points[index].lerp(points[index + 1],
+                                      (distance - walked[index]) / span)
+    return points[-1].copy()
+
+
+def _fill(
+    side_points: list[mathutils.Vector],
+    walked: list[float],
+    start: float,
+    finish: float,
+    spacing: float,
+) -> list[mathutils.Vector]:
+    """Interior points between two arc positions, at about `spacing` apart."""
+    gap = finish - start
+    if gap <= 0.0 or spacing <= 0.0:
+        return []
+    steps = max(1, min(MAX_MATCHED_SEGMENTS, round(gap / spacing)))
+    return [_along(side_points, walked, start + gap * step / steps)
+            for step in range(1, steps)]
+
+
+def _at_along(
+    point: mathutils.Vector, side_points: list[mathutils.Vector]
+) -> float:
+    """Where along the side this point sits, by arc length."""
+    return _distance_to_polyline(point, side_points)[1]
+
+
+def _complete_open_side(
+    ordered: list[mathutils.Vector], side_points: list[mathutils.Vector]
+) -> tuple[list[mathutils.Vector] | None, str]:
+    """A run covering part of an open side, extended to the whole of it.
+
+    The side's own endpoints are kept exactly: they are the patch's corners,
+    welded to their neighbours *by identity*, so moving one would break a weld
+    that has nothing to do with this match.
+    """
+    spacing = _run_spacing(ordered)
+    if spacing <= 0.0:
+        return None, "neighbour's vertices are coincident"
+
+    walked = _cumulative(side_points)
+    head = _at_along(ordered[0], side_points)
+    tail = _at_along(ordered[-1], side_points)
+
+    points = [side_points[0].copy()]
+    points += _fill(side_points, walked, 0.0, head, spacing)
+    points += ordered
+    points += _fill(side_points, walked, tail, walked[-1], spacing)
+    points.append(side_points[-1].copy())
+    return points, ""
 
 
 def _close_matched_ring(
     ordered: list[mathutils.Vector],
     side_points: list[mathutils.Vector],
     tolerance: float,
+    partial: bool = False,
 ) -> tuple[list[mathutils.Vector] | None, str]:
     """Turn matched points on a closed side into a closed polyline, or refuse.
 
@@ -2275,14 +2445,19 @@ def _close_matched_ring(
     if total <= 0.0:
         return None, "side has no length"
 
-    gaps = sorted((b - a).length for a, b in zip(ordered, ordered[1:]))
-    gaps.append((ordered[0] - ordered[-1]).length)  # the wrap
+    positions = [_at_along(point, side_points) for point in ordered]
+    gaps = [b - a for a, b in zip(positions, positions[1:])]
+    gaps.append(total - positions[-1] + positions[0])   # the wrap, along the side
     gaps.sort()
     largest = gaps[-1]
     median = gaps[len(gaps) // 2]
     if (largest > total * CLOSED_SIDE_MAX_GAP
             and largest > median * CLOSED_SIDE_GAP_RATIO):
-        return None, "neighbour only covers part of this loop"
+        if not partial:
+            return None, "neighbour only covers part of this loop"
+        ordered = _complete_closed_side(ordered, side_points, total)
+        if ordered is None:
+            return None, "neighbour's vertices are coincident"
 
     start = side_points[0]
     at_start = min(range(len(ordered)), key=lambda i: (ordered[i] - start).length)
@@ -2292,6 +2467,46 @@ def _close_matched_ring(
     rotated = ordered[at_start:] + ordered[:at_start]
     rotated.append(rotated[0].copy())
     return rotated, ""
+
+
+def _complete_closed_side(
+    ordered: list[mathutils.Vector],
+    side_points: list[mathutils.Vector],
+    total: float,
+) -> list[mathutils.Vector] | None:
+    """A run covering an arc of a closed side, extended round the rest of it.
+
+    The reverse of the open case: a loop has no endpoints to keep, so the whole
+    remainder is one gap and the fill simply carries the neighbour's spacing
+    round it. Which is the case in the report -- a bore's rim bordered by one
+    small committed patch, refused outright until now even though the arc they
+    share is perfectly matchable.
+    """
+    spacing = _run_spacing(ordered)
+    if spacing <= 0.0:
+        return None
+
+    walked = _cumulative(side_points)
+    positions = [_at_along(point, side_points) for point in ordered]
+    order = sorted(range(len(ordered)), key=lambda i: positions[i])
+    ordered = [ordered[i] for i in order]
+    positions = [positions[i] for i in order]
+
+    # The gap is what the run does *not* cover, and on a loop it **wraps**: it
+    # runs from the last matched point, through the side's own start, to the
+    # first. Filled as one arc rather than as the two pieces either side of
+    # that start -- the start of a cornerless loop is wherever the half-edge
+    # walk began, and splitting the fill there would put one short step at a
+    # place nothing in the model knows about.
+    gap = total - positions[-1] + positions[0]
+    if gap <= 0.0:
+        return list(ordered)
+    steps = max(1, min(MAX_MATCHED_SEGMENTS, round(gap / spacing)))
+    filled = list(ordered)
+    for step in range(1, steps):
+        filled.append(_along(side_points, walked,
+                             (positions[-1] + gap * step / steps) % total))
+    return filled
 
 
 def side_match_tolerance(

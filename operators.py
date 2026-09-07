@@ -838,15 +838,26 @@ def ray_from_event(
     """(ray_origin, ray_direction) under the mouse, or (None, None) when the
     cursor isn't over the 3D viewport.
     """
+    return ray_from_window(context, event.mouse_x, event.mouse_y)
+
+
+def ray_from_window(
+    context: bpy.types.Context, mouse_x: float, mouse_y: float
+) -> tuple[mathutils.Vector | None, mathutils.Vector | None]:
+    """The same, from window-absolute coordinates rather than from an event.
+
+    Window-absolute throughout, converted against the WINDOW region itself:
+    `event.mouse_region_*` is relative to whichever region received the event,
+    which may not be the one being cast into. Which is also why an operator the
+    modal dispatches can use this at all -- it reads the pointer the modal left
+    in `overlay.cursor_window` instead of an event it never gets.
+    """
     region, rv3d = viewport_region(context)
     if region is None:
         return None, None
 
-    # Window-absolute coordinates, converted against the WINDOW region itself:
-    # event.mouse_region_* is relative to whichever region received the event,
-    # which may not be the one we're casting into.
-    x = event.mouse_x - region.x
-    y = event.mouse_y - region.y
+    x = mouse_x - region.x
+    y = mouse_y - region.y
     if not (0 <= x <= region.width and 0 <= y <= region.height):
         return None, None  # cursor is outside the viewport (e.g. over the N-panel)
 
@@ -929,6 +940,11 @@ def set_active_patch(
     state = context.scene.plasticity_retop
     state.side_overrides = ""
     state.hovered_side = -1
+    # Which patch this one copied from, and which way round. Per patch, for the
+    # same reason a pin is: carried over, the first click on the *next* patch
+    # would come back swapped.
+    state.copy_source_face_id = -1
+    state.copy_source_swapped = False
 
     # Same reason as in enter_session_object: claim untracked pre-existing
     # retopology before deciding whether this patch is a re-edit. Cheap no-op
@@ -987,6 +1003,8 @@ def _clear_match_state(state: state_mod.RetopPatchState) -> None:
     sidematch.clear_side_references()
     state.hovered_side = -1
     state.side_overrides = ""
+    state.copy_source_face_id = -1
+    state.copy_source_swapped = False
 
 
 def end_session(context: bpy.types.Context, push: bool = True) -> None:
@@ -1361,6 +1379,7 @@ class RETOP_OT_session(bpy.types.Operator):
 
         if event.type == 'MOUSEMOVE':
             state.hovered_side = nearest_side_to_cursor(context, event)
+            state.copy_hover_face_id = _copy_source_under_cursor(context, event)
             return {'RUNNING_MODAL'}
 
         if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
@@ -1724,11 +1743,26 @@ class RETOP_OT_session(bpy.types.Operator):
             if event.value == 'PRESS' and self._handle_typed_digit(context, event):
                 return {'RUNNING_MODAL'}
 
-            # Left click: nothing else to select while adjusting a patch, and
-            # the side picker above has already had its chance at it. Not a
-            # binding either -- it is what a click *falls back to* once nothing
-            # else wanted it.
             if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+                # A click *with a binding on it* is a binding like any other,
+                # and has to be dispatched before the fallback below can claim
+                # it. Clicks are held out of the dispatch at the top of this
+                # method because a plain one means "the thing under the
+                # cursor", which only the picker can resolve -- but that
+                # exclusion swallowed every modified click too, so Ctrl+click
+                # committed the patch instead of copying a density and the
+                # session left ADJUST with nothing done.
+                #
+                # Safe for the plain click as well: the picker above has
+                # already had it, `pin_neighbour` polls on a side being under
+                # the cursor, and with none there nothing runs and the fallback
+                # still commits.
+                if self._dispatch_bound(context, event):
+                    return {'RUNNING_MODAL'}
+                # Nothing else to select while adjusting a patch, so a click
+                # that landed on nothing commits -- same as right-click and
+                # Enter. Not a binding: it is what a click falls back to once
+                # nothing else wanted it.
                 self._commit(context)
                 return {'RUNNING_MODAL'}
 
@@ -2053,6 +2087,159 @@ class RETOP_OT_pin_side(bpy.types.Operator):
             return {'CANCELLED'}
         self.report({'INFO'}, _match_report(state, adopted))
         return {'FINISHED'}
+
+
+def _copy_source_under_cursor(
+    context: bpy.types.Context, event: bpy.types.Event
+) -> int:
+    """The committed patch the cursor is over, or -1.
+
+    What the overlay outlines to say "this one has a density you can take". A
+    raycast per mouse move, which the PATCH phase already pays for and which
+    nothing here caches: it is the *outline* that would be expensive, and that
+    comes from `cad_display`, cached per mesh like everything else a draw
+    handler reads.
+
+    Only ever a different patch from the one being adjusted, and only one that
+    has been committed -- whether its generator agrees is left to the overlay,
+    which has room to say why not.
+    """
+    state = context.scene.plasticity_retop
+    session_obj = bpy.data.objects.get(state.session_object_name)
+    if session_obj is None:
+        return -1
+
+    obj, face_id, _distance = _raycast_patch(context, event)
+    if obj is None or obj != session_obj or face_id is None:
+        return -1
+    if face_id == state.active_face_id:
+        return -1
+    stored = mesh_build.lookup_patch_settings(session_obj, face_id)
+    return face_id if stored else -1
+
+
+def copy_spans_from(
+    context: bpy.types.Context, face_id: int
+) -> tuple[bool, str]:
+    """Give the patch being adjusted the spans `face_id` was committed with.
+
+    The generator each patch was built by is recorded at commit
+    (`mesh_build.register_patch_settings`), which is what makes this answerable
+    at all: a Ring's two counts mean *around* and *across*, an N-Side's single
+    one means segments per side, and a number copied between two different
+    generators would be a number with a different meaning. So the spans travel
+    only between patches built the same way, and the refusal names both.
+
+    Returns (done, message) -- the message is worth saying either way, since
+    "nothing happened" is what a silently refused click looks like.
+    """
+    state = context.scene.plasticity_retop
+    if face_id == state.active_face_id:
+        return False, "that is this patch"
+
+    obj = bpy.data.objects.get(state.session_object_name)
+    if obj is None:
+        return False, "no session object"
+
+    stored = mesh_build.lookup_patch_settings(obj, face_id)
+    if not stored:
+        return False, f"patch {face_id} has not been committed yet"
+
+    source_generator = stored.get("generator") or ""
+    if source_generator != state.generator_name:
+        return False, (f"patch {face_id} is a {source_generator or 'different'}, "
+                       f"this one is a {state.generator_name or 'different patch'}")
+    # The viewport promised this before the click; `copy_source_status` is what
+    # it promised with, and it reads the same record.
+
+
+    # **Clicking the same patch again exchanges the two spans.** Which of a
+    # quad's directions is U comes from where its boundary walk started, and
+    # nothing in either patch says how one's U relates to the other's -- so a
+    # copy lands rotated about half the time and there is no way to work out in
+    # advance which half. A second click is that answer: one gesture, two
+    # states, the same shape as clicking a matched side to release it. A ring
+    # never needs it (around is around), and a single-span generator has
+    # nothing to exchange, which is said rather than silently ignored.
+    swap = (face_id == state.copy_source_face_id) and not state.copy_source_swapped
+    two_spans = source_generator in constants.TWO_SPAN_GENERATORS
+    if swap and not two_spans:
+        return False, f"a {source_generator} has one span, so there is nothing to swap"
+
+    values = {key: stored.get(key) for key in ("span_u", "span_v", "span")}
+    if swap:
+        values["span_u"], values["span_v"] = values["span_v"], values["span_u"]
+
+    # Every span in the record, exactly as a re-edit restores them: which of
+    # them the generator reads is the generator's business, and the ones it
+    # does not read cost nothing.
+    changed = []
+    for key in ("span_u", "span_v", "span"):
+        value = values.get(key)
+        if not (isinstance(value, int) and value >= 1):
+            continue
+        if getattr(state, key, None) == value:
+            continue
+        # Assigning fires the property's update callback, which regenerates the
+        # preview -- the same path the wheel takes.
+        setattr(state, key, value)
+        changed.append(f"{key[-1].upper()}={value}" if key != "span" else f"span={value}")
+
+    state.copy_source_face_id = face_id
+    state.copy_source_swapped = swap
+
+    swapped_note = " (swapped)" if swap else ""
+    if not changed:
+        return True, f"already the same density as patch {face_id}{swapped_note}"
+    return True, (f"copied from patch {face_id}{swapped_note}: " + ", ".join(changed))
+
+
+class RETOP_OT_copy_patch_spans(bpy.types.Operator):
+    """Copy the density of another committed patch onto the one being adjusted.
+
+    Point at finished retopology and take its spans. Propagation already does
+    this across a *shared boundary*, where the two patches have to agree or
+    they crack; this is the other half -- two patches that never touch, a ring
+    here and a ring there, which want the same density for no reason the mesh
+    can work out on its own.
+    """
+    bl_idname = "retop.copy_patch_spans"
+    bl_label = "Copy Patch Density"
+    bl_description = ("Copy the spans of the committed patch under the cursor onto the patch "
+                      "being adjusted. Only between patches built by the same generator: a "
+                      "Ring's counts mean around and across, an N-Side's means segments per "
+                      "side, and the same number means something else in each")
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        state = context.scene.plasticity_retop
+        return (state.session_active and state.session_phase == 'ADJUST'
+                and state.active_face_id != -1)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        # The pointer the modal left behind: an operator it dispatches never
+        # sees the event, the same arrangement the side tooltip uses.
+        cursor = overlay.cursor_window
+        if cursor is None:
+            self.report({'WARNING'}, "Cursor is not over the viewport")
+            return {'CANCELLED'}
+
+        origin, direction = ray_from_window(context, cursor[0], cursor[1])
+        if origin is None:
+            self.report({'WARNING'}, "Cursor is not over the viewport")
+            return {'CANCELLED'}
+
+        _obj, face_id, _distance = _raycast_patch_ray(
+            context, origin, direction, space=context.space_data)
+        if face_id is None:
+            self.report({'WARNING'}, "No patch under the cursor to copy from")
+            return {'CANCELLED'}
+
+        done, message = copy_spans_from(context, face_id)
+        self.report({'INFO'} if done else {'WARNING'},
+                    message if done else f"Can't copy density: {message}")
+        return {'FINISHED'} if done else {'CANCELLED'}
 
 
 class RETOP_OT_tweak_mesh(bpy.types.Operator):
@@ -2863,6 +3050,7 @@ CLASSES = (
     RETOP_OT_clear_preview,
     RETOP_OT_delete_patch,
     RETOP_OT_pin_side,
+    RETOP_OT_copy_patch_spans,
     RETOP_OT_tweak_mesh,
     RETOP_OT_end_tweak,
     RETOP_OT_mirror_axis,

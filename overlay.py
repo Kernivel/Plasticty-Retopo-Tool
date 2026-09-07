@@ -96,6 +96,19 @@ SIDE_WIDTH = 3.0
 SIDE_MATCHED_WIDTH = 4.5
 SIDE_HOVER_WIDTH = 6.0
 
+# --- the patch a Ctrl+click would copy a density from -----------------------
+#
+# Amber, which the side colours gave up when matching became binary: it is not
+# a state of *this* patch at all, so it must not land anywhere on the
+# matched/unmatched scale. Its own outline rather than a fill -- the patch is
+# finished geometry, and tinting it would compete with the preview being
+# adjusted, which is the thing actually being worked on.
+COPY_SOURCE_COLOR = (1.0, 0.72, 0.25, 0.95)
+COPY_SOURCE_REFUSED_COLOR = (0.75, 0.45, 0.30, 0.7)
+COPY_SOURCE_WIDTH = 3.0
+TOOLTIP_COPY = (1.0, 0.82, 0.5, 1.0)
+
+
 # --- cracked borders -------------------------------------------------------
 #
 # Same red as an unmatched side, because it is the same failure seen later: the
@@ -292,6 +305,10 @@ def keybinds_for(
     binds.append((key("match_mode"), "Side highlight: "
                   + ("on" if getattr(state, "match_mode", True) else "off")))
     binds.append((key("pin_neighbour"), "Match a side, else " + commit_label.lower()))
+    # Only on a generator that has spans to copy: an n-gon's density is its
+    # angle, and there is nothing in the record for the click to take.
+    if not getattr(state, "ngon_mode", False):
+        binds.append((key("copy_spans"), "Copy a patch's density"))
     # Every way of committing, not just the first: right-click and Enter are
     # both worth knowing (the right-click is the Plasticity-style affordance
     # people arrive expecting), and this is the one action where the second
@@ -370,7 +387,11 @@ def _draw() -> None:
     # Only when the side picker has not already spoken: a side under the cursor
     # is the patch being worked on, and two boxes at one pointer is neither.
     if not _side_tooltip_shown(state):
-        _draw_crack_tooltip(context, state, region, scale)
+        # The copy source wins over the crack report: the cursor is on a patch
+        # the user has deliberately moved onto, and what a click there does now
+        # is the more immediate question.
+        if not _draw_copy_tooltip(context, state, region, scale):
+            _draw_crack_tooltip(context, state, region, scale)
 
     font_id = 0
     _set_font_size(font_id, FONT_SIZE * scale)
@@ -641,6 +662,33 @@ def _draw_crack_tooltip(
         TOOLTIP_CRACK)
 
 
+def _draw_copy_tooltip(
+    context: bpy.types.Context,
+    state: "state_mod.RetopPatchState",
+    region: bpy.types.Region,
+    scale: float,
+) -> bool:
+    """What Ctrl+click on the patch under the cursor would take. Returns
+    whether anything was drawn.
+
+    The outline says *which* patch; only this says what would come across, and
+    a density you cannot read before taking it is a click you have to undo to
+    find out about.
+    """
+    face_id = getattr(state, "copy_hover_face_id", -1)
+    if state.session_phase != 'ADJUST' or face_id == -1:
+        return False
+
+    obj = bpy.data.objects.get(getattr(state, "session_object_name", ""))
+    title, detail = mesh_build.copy_source_status(state, obj, face_id)
+    if not title:
+        return False
+    _draw_tooltip_box(region, scale, f"{keymap.describe('copy_spans')}: {title}"
+                      if title.startswith("Copy") else title,
+                      detail, TOOLTIP_COPY)
+    return True
+
+
 def _side_tooltip_shown(state: "state_mod.RetopPatchState") -> bool:
     """Whether `_draw_side_tooltip` just drew something."""
     if state.session_phase != 'ADJUST' or not getattr(state, "match_mode", False):
@@ -665,6 +713,7 @@ def _draw_points() -> None:
     # you read *while choosing* a surface, not only while adjusting one.
     _draw_cad_structure(context, state)
     _draw_cracked_borders(context, state)
+    _draw_copy_source(context, state)
 
     if state.session_phase != 'ADJUST':
         return
@@ -741,6 +790,42 @@ def _draw_match_points(
             batch_for_shader(shader, 'TRIS', {"pos": vertices},
                              indices=indices).draw(shader)
 
+    gpu.state.blend_set('NONE')
+
+
+def _draw_copy_source(
+    context: bpy.types.Context, state: "state_mod.RetopPatchState"
+) -> None:
+    """POST_VIEW: outline the committed patch a Ctrl+click would copy from.
+
+    Its B-rep edges, which `cad_display` already has cached per patch -- a
+    hover may not walk a mesh, and this one fires on every mouse move while a
+    patch is open.
+    """
+    face_id = getattr(state, "copy_hover_face_id", -1)
+    if state.session_phase != 'ADJUST' or face_id == -1:
+        return
+    obj = bpy.data.objects.get(getattr(state, "session_object_name", ""))
+    if obj is None or obj.type != 'MESH':
+        return
+
+    segments = cad_display.edge_segments(obj.data, face_id)
+    if not segments:
+        return
+
+    # Dimmed when the two generators disagree: the outline still says "there is
+    # something here", and the tooltip says why the click will refuse. Drawn
+    # either way, because an outline that appears only on a valid target makes
+    # a refusal look like a target that was never there.
+    title, _detail = mesh_build.copy_source_status(state, obj, face_id)
+    matches = title.startswith("Copy")
+
+    matrix = obj.matrix_world
+    gpu.state.blend_set('ALPHA')
+    gpu.state.depth_test_set('NONE')
+    _draw_line_batch([matrix @ point for point in segments],
+                     COPY_SOURCE_COLOR if matches else COPY_SOURCE_REFUSED_COLOR,
+                     COPY_SOURCE_WIDTH)
     gpu.state.blend_set('NONE')
 
 

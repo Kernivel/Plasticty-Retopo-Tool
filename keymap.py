@@ -78,6 +78,11 @@ ACTIONS: tuple[tuple[str, str, str, str, dict[str, object], list[dict[str, objec
     # matches it again.
     ("pin_neighbour", "Match side", SESSION, "retop.pin_side",
      {}, [_b('LEFTMOUSE')]),
+    # Ctrl on the same button, and the modifier comparison is exact (`_matches`),
+    # so the two never collide. It is the one gesture that reads as "take that
+    # one's settings" without a mode to enter first.
+    ("copy_spans", "Copy patch density", SESSION, "retop.copy_patch_spans", {},
+     [_b('LEFTMOUSE', ctrl=True)]),
     ("delete_patch", "Delete patch", SESSION, "retop.delete_patch", {}, [_b('X')]),
     ("commit", "Commit patch", SESSION, "retop.commit_patch", {},
      [_b('RET'), _b('NUMPAD_ENTER'), _b('RIGHTMOUSE')]),

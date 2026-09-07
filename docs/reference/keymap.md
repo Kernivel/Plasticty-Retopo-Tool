@@ -19,6 +19,8 @@ arrow puts one back.
 | <kbd>M</kbd> | Side highlight on/off |
 | Click a side | Match the committed neighbour across it |
 | Click a matched side | Turn that match off |
+| <kbd>Ctrl</kbd> + click a done patch | Copy its density (same generator only) |
+| <kbd>Ctrl</kbd> + click it again | Take it with U and V exchanged |
 | <kbd>X</kbd> | Delete the patch (re-edit only) |
 | Right click / <kbd>Enter</kbd> / click on no side | Commit |
 | <kbd>Esc</kbd> | Clear typing, then discard |
