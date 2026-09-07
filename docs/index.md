@@ -24,10 +24,11 @@ meshes. The keybinds are re-mappable in the plugin settings.
 
 ## Start here
 
-- [**Installation**](installation.md) — Blender 4.2+, the bridge, and the deploy script.
-- [**Your first patch**](first-patch.md) — session start to committed quad grid, in five minutes.
-- [**How it works**](guide/generators.md) — what a patch is, and how one gets filled.
-- [**Keymap**](reference/keymap.md) — every binding, and where to remap it.
+- [**Installation**](installation.md) – Blender 4.2+, the bridge, and the deploy script.
+- [**Your first patch**](first-patch.md) - session start to committed quad grid, in five minutes.
+- [**General Knowledge**](general.md) – information about the workings of the plugin.
+- [**How it works**](guide/generators.md) – what a patch is, and how one gets filled.
+- [**Keymap**](reference/keymap.md) – every binding, and where to remap it.
 
 ## What it is not
 
