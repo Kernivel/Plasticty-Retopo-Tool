@@ -13,8 +13,9 @@ Open the 3D view's N-panel, **Retop** tab, and press **Start Retop Session**.
 
     The plugin work in Object Mode, starting it from Edit Mode will lead to an error.
 
-<!-- media: 6s. Panel visible, click Start Retop Session, viewport hints appear
-     along the bottom. -->
+<video autoplay loop muted playsinline poster="../assets/img/start-session.jpg">
+  <source src="../assets/video/start-session.webm" type="video/webm">
+</video>
 
 ## 2. Pick an object
 
@@ -31,8 +32,9 @@ Click a Plasticity-imported mesh.
 
 Hover the model. The patch under the cursor previews in orange, click to start working on it.
 
-<!-- media: 10s. Hover across four adjacent faces of a part so the orange
-     preview jumps face to face, then click one. -->
+<video autoplay loop muted playsinline poster="../assets/img/hover-patches.jpg">
+  <source src="../assets/video/hover-patches.webm" type="video/webm">
+</video>
 
 !!! tip "Turn the CAD edges on"
 

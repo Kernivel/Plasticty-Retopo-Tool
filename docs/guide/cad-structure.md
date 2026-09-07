@@ -16,7 +16,9 @@ Both work in every session phase — the structure is read while *choosing* a
 surface as much as while adjusting one — and both are remappable. They can be
 scoped to the whole object or to the patch under the cursor.
 
-<!-- media: 12s. Toggle E on a part, then Ctrl+E, then orbit with both on. -->
+<video autoplay loop muted playsinline poster="../../assets/img/cad-edges.jpg">
+  <source src="../../assets/video/cad-edges.webm" type="video/webm">
+</video>
 
 ## Plasticity edges are exact
 
