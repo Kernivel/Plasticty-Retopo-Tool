@@ -23,7 +23,7 @@ and enable *Plasticity Retop*. Updating means installing the newer zip over it.
    ```
    Then enable *Plasticity Retop* in `Preferences > Add-ons`, and turn on
    **Developer Mode** in its preferences — that is what shows the panel's
-   reload buttons and its stale-code warning.
+   reload button and its stale-code warning.
 4. **Check everything works:**
    ```bash
    python scripts/run_tests.py

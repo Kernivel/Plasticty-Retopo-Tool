@@ -66,16 +66,17 @@ Blender is found via `--blender`, `$BLENDER`, `PATH`, then usual install
 paths. Plasticity itself is **not** needed to develop or test: the tests build
 synthetic meshes carrying the same custom properties the bridge writes.
 
-After deploying, use the panel's **Reload Addon Only** button — plain
-"Reload Scripts" can silently half-fail when another installed addon errors
-during its own reload. A reload that leaves a module stale is the one failure
+After deploying, use the panel's **Reload Addon Only** button — Blender's own
+global "Reload Scripts" (which the panel deliberately does not offer beside it)
+can silently half-fail when another installed addon errors during its own
+reload. A reload that leaves a module stale is the one failure
 the version string cannot report; see the reload invariant below.
 
-**Those buttons are behind `prefs.developer_mode`, off by default**, and so is
+**That button is behind `prefs.developer_mode`, off by default**, and so is
 the red stale-load warning. Neither means anything to someone who installed the
 addon from a release zip: there is one copy of the code, nothing writes over it
 between reloads, and the way to get new code is to install the new zip. Left on
-for everyone, a pair of reload buttons reads as a fix-it button for any
+for everyone, a reload button reads as a fix-it button for any
 misbehaviour, which is exactly what it is not. `prefs.developer_mode()` reads
 through `keymap.preferences()`, which returns None outside an installed addon —
 the tests and `--background` — so it is off there too and nothing headless can

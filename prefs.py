@@ -47,7 +47,7 @@ def _addon_keymap_items() -> list[tuple[bpy.types.KeyMap, bpy.types.KeyMapItem]]
 def developer_mode() -> bool:
     """Whether the addon's own development affordances are shown.
 
-    Off by default: the reload buttons and the stale-load warning only mean
+    Off by default: the reload button and the stale-load warning only mean
     anything when the addon is being *edited* from a checkout. Installed from a
     release zip there is nothing to reload against, and a button that reloads
     the code you just installed is at best noise.
@@ -111,10 +111,10 @@ class RETOP_AddonPreferences(bpy.types.AddonPreferences):
 
     developer_mode: bpy.props.BoolProperty(
         name="Developer Mode",
-        description=("Show the System tab's reload buttons and the stale-code warning. Reloading "
+        description=("Show the System tab's reload button and the stale-code warning. Reloading "
                      "is for working on the addon from a checkout, where the panel's version "
                      "string is the only way to tell a deploy actually took. An addon installed "
-                     "from a release zip is reloaded by re-installing it, so the buttons are "
+                     "from a release zip is reloaded by re-installing it, so the button is "
                      "hidden by default rather than offering a developer's workflow to everyone"),
         default=False,
     )

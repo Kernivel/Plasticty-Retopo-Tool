@@ -643,18 +643,18 @@ def _draw_tab_system(layout: bpy.types.UILayout) -> None:
     body.label(text=f"Version {version.ADDON_VERSION}")
     body.label(text=f"Build {version.BUILD_ID}")
     body.separator()
-    # The reload buttons are a *developer's* affordance and are hidden unless
-    # the preference says so. Installed from a release zip there is nothing to
+    # The reload button is a *developer's* affordance and is hidden unless the
+    # preference says so. Installed from a release zip there is nothing to
     # reload against: the way to get new code is to install the new zip. Left
-    # on for everyone, the pair reads as a fix-it button for any misbehaviour,
-    # which is exactly what it is not.
+    # on for everyone, it reads as a fix-it button for any misbehaviour, which
+    # is exactly what it is not. Blender's own global Reload Scripts is not
+    # offered beside it: it can silently half-fail when another installed addon
+    # errors during its own reload, which is the one failure the version string
+    # cannot report.
     if prefs.developer_mode():
-        # "Reload Addon Only" first: plain Reload Scripts can silently half-fail
-        # when another installed addon errors during its own reload.
         body.operator("retop.reload_addon", text="Reload Addon Only", icon='FILE_REFRESH')
-        body.operator("script.reload", text="Reload Scripts", icon='BLENDER')
     else:
-        body.label(text="Reload buttons: Preferences > Add-ons > Developer Mode")
+        body.label(text="Reload button: Preferences > Add-ons > Developer Mode")
 
 
 class VIEW3D_PT_retop(bpy.types.Panel):
