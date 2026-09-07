@@ -1,14 +1,15 @@
 # Your first patch
 
-!!! warning "Prerequisites"
-Since this plugin relies on the Plasticity Bridge, you first need to import a mesh through it.
-Please visit https://doc.plasticity.xyz/blender/how-to-use to learn how to do that.
+!!! Note "Prerequisites"
+
+    Since this plugin relies on the Plasticity Bridge, you first need to import a mesh through it.
+    Please visit https://doc.plasticity.xyz/blender/how-to-use to learn how to do that.
 
 ## 1. Start the session
 
 Open the 3D view's N-panel, **Retop** tab, and press **Start Retop Session**.
 
-!!! note "Object Mode only"
+!!! warning "Object Mode only"
 
     The plugin work in Object Mode, starting it from Edit Mode will lead to an error.
 
