@@ -546,6 +546,10 @@ def _generate_for_face(
         # phase-aligned or resampled, or the match is thrown away and the two
         # rims come back half a step apart. See generators/ring.py.
         span_settings["locked_loops"] = sorted(sidematch.applied_loops())
+        # And *which* sides of them, with the count each was handed: a rim cut
+        # into several sides has only some of them carrying the neighbour's
+        # vertices, and the allocation may not redistribute those away.
+        span_settings["matched_sides"] = sidematch.applied_side_counts()
     result = generator.generate(generation_input, span_settings, bvh=bvh)
 
     mesh_build.update_preview_object(context, obj, result, corner_source_ids)

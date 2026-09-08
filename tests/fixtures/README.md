@@ -109,6 +109,7 @@ is actually tested, or rebuild the `.blend` from the oldest supported Blender.
 | `Square Plate Small Hole Scaled Down` | 11 | The same shape again, a hundredth the size. |
 | `Carved Rounded Slot` | 11 | An obround slot: a long strip curving back on itself, for `shape_corners`. |
 | `Plate And Cylinder` | 14 | A filleted boss — a ring-shaped band that also joins its neighbours smoothly. |
+| `Cube Two Booleans` | 15 | Two bores through a plate, with **incomplete** bands and one rim deliberately cut by isoparms while its partner is left whole. The multi-side ring: matching one side of a rim that has several. Also the file's only `N-Side` patches at 6 and 8 sides, and two faces where every boundary vertex reads as a corner. |
 | `Shape with holes` | 17 | Faces with five boundary loops each, past what the pipeline handles. |
 | `Sphere` | 1 | A single closed periodic face — no boundary loop at all. |
 | `Torus` | 1 | The same, at genus 1. |

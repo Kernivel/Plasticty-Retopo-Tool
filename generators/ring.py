@@ -44,35 +44,66 @@ def polyline_length(points: list[mathutils.Vector]) -> float:
     return sum((b - a).length for a, b in zip(points, points[1:]))
 
 
-def allocate_segments(lengths: list[float], total: int) -> list[int]:
+def allocate_segments(
+    lengths: list[float], total: int, pinned: dict[int, int] | None = None
+) -> list[int]:
     """Split `total` segments among sides proportionally to `lengths`, with at
     least one segment per side (largest-remainder rounding).
 
     `total` is raised to the number of sides if it is smaller -- a side can't
     have zero segments, and both loops of a ring must end up with exactly the
     same number of points.
+
+    `pinned` names sides that already know their count: a side handed a
+    committed neighbour's own vertices has to come out with exactly as many
+    segments as it was given, or the resample moves the very points the match
+    existed to land on. Only the remainder is shared out among the rest.
+
+    A pin set that cannot fit -- its total, plus one segment for every free
+    side, exceeding `total` -- is dropped **whole**. Keeping some of it would
+    hand part of the loop a neighbour's vertices and resample the rest onto a
+    number nobody asked for, which is the half-welded crack this exists to
+    prevent; and the loop's total is not negotiable, since both rims of a band
+    must come out with the same point count.
     """
     n = len(lengths)
     if n == 0:
         return []
 
-    total = max(int(total), n)
-    span_total = sum(lengths)
-    if span_total <= 0.0:
-        raw = [total / n] * n
-    else:
-        raw = [total * length / span_total for length in lengths]
+    pins = {index: int(count)
+            for index, count in (pinned or {}).items()
+            if 0 <= index < n and int(count) >= 1}
+    free = [index for index in range(n) if index not in pins]
+    fixed = sum(pins.values())
 
-    alloc = [max(1, int(math.floor(value))) for value in raw]
+    total = max(int(total), n)
+    if fixed + len(free) > total:
+        pins, free, fixed = {}, list(range(n)), 0
+
+    if not free:
+        return [pins[index] for index in range(n)]
+
+    remainder = total - fixed
+    span_total = sum(lengths[index] for index in free)
+    if span_total <= 0.0:
+        raw = {index: remainder / len(free) for index in free}
+    else:
+        raw = {index: remainder * lengths[index] / span_total for index in free}
+
+    alloc = [pins.get(index, 0) for index in range(n)]
+    for index in free:
+        alloc[index] = max(1, int(math.floor(raw[index])))
     diff = total - sum(alloc)
 
     if diff > 0:
         # hand the leftovers to the sides with the largest dropped fraction
-        order = sorted(range(n), key=lambda i: raw[i] - math.floor(raw[i]), reverse=True)
+        order = sorted(free, key=lambda i: raw[i] - math.floor(raw[i]), reverse=True)
         for k in range(diff):
-            alloc[order[k % n]] += 1
+            alloc[order[k % len(free)]] += 1
     while diff < 0:
-        reducible = [i for i in range(n) if alloc[i] > 1]
+        # only a free side may give a segment back: a pinned one is reproducing
+        # a neighbour's vertices and has no spare.
+        reducible = [index for index in free if alloc[index] > 1]
         if not reducible:
             break
         alloc[max(reducible, key=lambda i: alloc[i])] -= 1
@@ -82,15 +113,22 @@ def allocate_segments(lengths: list[float], total: int) -> list[int]:
 
 
 def ring_from_sides(
-    sides: list[list[mathutils.Vector]], total: int
+    sides: list[list[mathutils.Vector]], total: int,
+    pinned: dict[int, int] | None = None
 ) -> tuple[list[mathutils.Vector], list[int], list[int]]:
     """Resample a loop's sides into exactly `total` points walking around it.
 
     Returns (points, corner_indices, alloc): `corner_indices` are the positions
     in `points` of each side's first point, i.e. the patch corners -- those are
     untouched source-mesh vertices, so they stay weldable by identity.
+
+    `pinned` is passed straight to `allocate_segments`: a matched side asked
+    for exactly its own count gets its polyline handed back untouched, since
+    `resample_polyline_by_arclength` returns what it was given when the count
+    already matches.
     """
-    alloc = allocate_segments([polyline_length(side) for side in sides], total)
+    alloc = allocate_segments([polyline_length(side) for side in sides], total,
+                              pinned)
 
     points = []
     corner_indices = []
@@ -164,7 +202,8 @@ def is_band(loops: list[Loop]) -> bool:
     return max(outer, inner) <= min(outer, inner) * BAND_PERIMETER_RATIO
 
 
-def loop_point_count(sides: list[list[mathutils.Vector]]) -> int:
+def loop_point_count(sides: list[list[mathutils.Vector]],
+                     pinned: dict[int, int] | None = None) -> int:
     """How many distinct points a loop's sides already hold.
 
     Each side repeats its neighbour's first point, so a side of k+1 points
@@ -172,8 +211,17 @@ def loop_point_count(sides: list[list[mathutils.Vector]]) -> int:
     every side's last point. This is what a *matched* loop's count has to be:
     its points are a committed neighbour's own vertices, and resampling them to
     any other number would move them off it.
+
+    `pinned` overrides the sides a match replaced. On a rim of one cornerless
+    side the two agree, which is why this went unnoticed: `len(side) - 1` of a
+    substituted polyline *is* the matched count. On a rim cut into several --
+    isoparms, or a corner the angle test found -- only the matched sides carry
+    the neighbour's vertices, and the rest are still the CAD tessellation.
+    Taking the pin per side is what keeps the two apart.
     """
-    return sum(max(1, len(side) - 1) for side in sides)
+    pins = pinned or {}
+    return sum(pins.get(index, max(1, len(side) - 1))
+               for index, side in enumerate(sides))
 
 
 def around_count(loops: list[Loop], span_u: int) -> int:
@@ -432,11 +480,17 @@ class RingGenerator(Generator):
         # same match worked or didn't depending on nothing the user can see.
         locked = {index for index in span_settings.get("locked_loops", ()) or ()
                   if index in (0, 1)}
+        # {loop: {side within the loop: segments}} for every side a match
+        # replaced. A *loop* being locked says only that something on it was
+        # matched; which sides, and how many segments each was handed, is what
+        # a rim cut into several sides needs -- see `loop_point_count`.
+        matched = span_settings.get("matched_sides") or {}
+        pins_for = {index: dict(matched.get(index, {}) or {}) for index in (0, 1)}
         around = around_count(loops, span_settings.get("span_u", 1))
         for index in sorted(locked):
             # At most one count can be honoured, and `sidematch._honours` has
             # already dropped any match that disagrees with the resolved span.
-            around = max(loop_point_count(loops[index]),
+            around = max(loop_point_count(loops[index], pins_for[index]),
                          len(loops[0]), len(loops[1]), 3)
             break
 
@@ -447,7 +501,8 @@ class RingGenerator(Generator):
         lead_sides, free_sides = loops[lead_index], loops[free_index]
         outer_sides = loops[0]  # for the winding check further down
 
-        lead, lead_corners, lead_alloc = ring_from_sides(lead_sides, around)
+        lead, lead_corners, lead_alloc = ring_from_sides(
+            lead_sides, around, pins_for[lead_index])
         n = len(lead)
         if n < 3:
             raise ValueError("Ring patch boundary is degenerate")
@@ -469,7 +524,8 @@ class RingGenerator(Generator):
             free_corners, free_alloc = [0], [n]
             free_position_of = {i: i for i in range(n)}
         else:
-            free, free_corners, free_alloc = ring_from_sides(free_sides, around)
+            free, free_corners, free_alloc = ring_from_sides(
+                free_sides, around, pins_for[free_index])
             if len(free) != n:
                 raise ValueError("Ring patch boundary is degenerate")
             free, free_position_of = align_rings(lead, free)

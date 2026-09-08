@@ -478,6 +478,29 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   fill subdivided every boundary segment without telling the neighbours, i.e.
   it put a T-junction on every shared edge, which is why Cube Chamfer Edges
   went from 32 open boundary edges to 6 with its deviation unchanged.
+  **And the centre has to be *inside* the patch, which the mean of the boundary
+  points is not.** On a convex outline it is, which is why this held for a year;
+  a face left by a boolean cut is concave, the mean lands outside the region,
+  and `project` then answers with the nearest point *on the surface* — which is
+  the boundary itself. The two sub-patches meeting at that spoke are quads
+  `C → M → Z → P` with `Z` sitting exactly on `M`: two corners in one place, a
+  zero-area cell whose normal is float noise. Every count looks healthy while it
+  happens — vertex count, face count, deviation — and what it measures as is
+  faces facing into the surface and an aspect ratio in the millions.
+  `nside.interior_point` triangulates the outline (`tessellate_polygon`, which
+  handles concave) and takes a triangle centroid, so the candidate is inside by
+  construction. **Which** candidate is not a detail: the largest triangle's
+  centroid fixed the patch that was folding and made a clean neighbour fold, so
+  it is scored by distance to the nearest boundary segment instead — the deepest
+  point of the shape. Being inside is necessary and not sufficient, and the
+  sufficient condition is the polygon's *kernel*, the points the whole boundary
+  can see: a spoke that leaves the region on its way to a midpoint turns over the
+  two quads either side of it, and a shape whose kernel is empty has no valid
+  centre at all. Measured on `Cube Two Booleans`: unwelded coincident vertices
+  100 → 9, worst aspect ratio 7.5M → 2.8M, **max deviation 6.08% → 11.11%** and
+  faces facing inward 34 → 35. The p95 deviation does not move (0.048% either
+  way), so both numbers are one localised artefact — the fold this does not
+  reach, which is still open.
   Per-side spans *in the panel* and hand-placed corners are still what the
   reference tool's full N-Side mode adds; the machinery under them is here.
   `tests/test_nside_match.py`.
@@ -1741,9 +1764,23 @@ Also implemented: **several matches on one N-Side patch**, since its sides no
 longer share a span (`nside.spoke_allocation`); and **cracked borders**, the
 standing report of a shared CAD edge two committed patches failed to close.
 
-Known rough edge: matching one side of a **multi-side ring** sets that loop's
-whole "around" count from that side alone — `span_key_for` now keys a ring per
-*loop* (so its two rims no longer knock each other out), but not per side.
-Correct for the common case, where a rim is one cornerless side; wrong when a
-ring's loop has several, and it wants the allocation logic
-`ring.allocate_segments` already has, threaded back through the match.
+Also implemented: **matching one side of a multi-side ring**. A rim of one
+cornerless side made "this loop carries a neighbour's vertices" and "this
+*side* does" the same statement, since the loop's total and the match's count
+were the same number — so `locked_loops` was all the band needed, and
+`loop_point_count` read the whole rim. Cut that rim into several, by an isoparm
+or by a corner the angle test found, and only some of its sides hold the
+neighbour's points: the allocation then shared the loop's total out by *length*
+and handed the matched side a count nobody asked for, resampling its vertices
+off the ones they had to land on. `sidematch.applied_side_counts` carries
+`{loop: {side: segments}}` beside `applied_loops`, and
+`ring.allocate_segments` takes it as `pinned` — matched sides keep their exact
+count, only the remainder is shared out. A pin set that cannot fit is dropped
+**whole**, because half of it is the half-welded crack the allocation exists to
+prevent and a band's two rims must come out with the same point count either
+way. `tests/test_ring_multiside_match.py` pins it, and asserts the old
+behaviour fails on the same geometry — otherwise the test proves nothing.
+
+Known rough edge: a ring's spans still do not propagate *into* it, and its two
+loops are paired by arc length, so a hole shaped very differently from the
+outer boundary distorts the band.

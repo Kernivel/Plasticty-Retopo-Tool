@@ -10,11 +10,11 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 
 | | |
 |---|---|
-| Generated | 2026-09-05 |
+| Generated | 2026-09-08 |
 | Blender | 5.1.1 |
-| Addon | 0.57.0 (2026-09-05-a) |
+| Addon | 0.65.0 (2026-09-08-a) |
 | Resolution | MID |
-| Fixture | `tests/fixtures/TestCases.blend`, 16 objects |
+| Fixture | `tests/fixtures/TestCases.blend`, 17 objects |
 
 **Deviation is a percentage of each object's bounding-box diagonal, sampled across face interiors** — never at vertices, which the generators put on the surface by construction and which therefore read ~0 on every shape. The `vertex` column is shown only to make that point: it is the number a naive measurement would report.
 
@@ -24,8 +24,9 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 |---|--:|--:|---|--:|--:|--:|
 | `Carved Rounded Slot` | 156 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 172v / 131f | 0.0690% | 90 |
 | `Cone` | 188 | 2 | 2&nbsp;Quad | 614v / 612f | 13.8606% | 0 |
-| `Cube Bevel Edges` | 1556 | 13 | 9&nbsp;Quad, 2&nbsp;Triangle, 2&nbsp;Wedge | 206v / 186f | 0.2215% | 76 |
+| `Cube Bevel Edges` | 1556 | 13 | 9&nbsp;Quad, 2&nbsp;Triangle, 2&nbsp;Wedge | 1035v / 982f | 0.4331% | 118 |
 | `Cube Chamfer Edges` | 20 | 9 | 8&nbsp;Quad, 1&nbsp;N-Side | 34v / 31f | 0.0001% | 6 |
+| `Cube Two Booleans` | 573 | 15 | 8&nbsp;Quad, 4&nbsp;N-Side, 3&nbsp;Ring | 2229v / 2104f | 11.1111% | 300 |
 | `Cylinder` | 320 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 1592v / 1590f | 0.0602% | 0 |
 | `Flat Loop` | 622 | 4 | 4&nbsp;Ring | 232v / 232f | 0.0808% | 0 |
 | `Loopsided Chamfers Cube` | 28 | 14 | 14&nbsp;Quad | 34v / 32f | 0.0001% | 0 |
@@ -37,7 +38,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | `Square Plate Small Hole Far Away` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 16v / 14f | 0.0007% | 0 |
 | `Square Plate Small Hole Scaled Down` | 28 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 12v / 10f | 0.0661% | 0 |
 | `Torus` | 27126 | 1 | 1&nbsp;unusable | — | — | — |
-| `Truncated Cone` | 264 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 814v / 812f | 0.0807% | 0 |
+| `Truncated Cone` | 374 | 3 | 2&nbsp;Quad, 1&nbsp;Ring | 1664v / 1662f | 0.0413% | 0 |
 
 ## Deviation from the CAD surface
 
@@ -45,8 +46,9 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 |---|--:|--:|--:|--:|--:|
 | `Carved Rounded Slot` | 0.0059% | 0.0161% | 0.0431% | **0.0690%** | 0.0007% |
 | `Cone` | 0.0631% | 0.4245% | 0.1759% | **13.8606%** | 0.0000% |
-| `Cube Bevel Edges` | 0.0430% | 0.0566% | 0.1004% | **0.2215%** | 0.0000% |
+| `Cube Bevel Edges` | 0.0397% | 0.0863% | 0.2083% | **0.4331%** | 0.0013% |
 | `Cube Chamfer Edges` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
+| `Cube Two Booleans` | 0.0478% | 0.3960% | 0.0469% | **11.1111%** | 0.0012% |
 | `Cylinder` | 0.0171% | 0.0247% | 0.0464% | **0.0602%** | 0.0006% |
 | `Flat Loop` | 0.0153% | 0.0263% | 0.0562% | **0.0808%** | 0.0000% |
 | `Loopsided Chamfers Cube` | 0.0000% | 0.0000% | 0.0001% | **0.0001%** | 0.0000% |
@@ -56,7 +58,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | `Square Plate Small Hole` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
 | `Square Plate Small Hole Far Away` | 0.0000% | 0.0001% | 0.0000% | **0.0007%** | 0.0000% |
 | `Square Plate Small Hole Scaled Down` | 0.0059% | 0.0172% | 0.0441% | **0.0661%** | 0.0001% |
-| `Truncated Cone` | 0.0147% | 0.0236% | 0.0494% | **0.0807%** | 0.0003% |
+| `Truncated Cone` | 0.0076% | 0.0121% | 0.0251% | **0.0413%** | 0.0009% |
 
 A large `max` against a modest `p95` means a few samples are far out rather than the whole surface being off — which is the signature of a hole being paved over, or an apex no grid represents.
 
@@ -66,8 +68,9 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 |---|--:|--:|---|--:|--:|--:|--:|--:|
 | `Carved Rounded Slot` | 172 | 131 | 131&times;4-gon | 90 | 0 | 0 | 0 | 4 |
 | `Cone` | 614 | 612 | 612&times;4-gon | 0 | 0 | 0 | 0 | 8 |
-| `Cube Bevel Edges` | 206 | 186 | 20&times;3-gon, 166&times;4-gon | 76 | 0 | 0 | 0 | 1 |
+| `Cube Bevel Edges` | 1035 | 982 | 12&times;3-gon, 970&times;4-gon | 118 | 0 | 0 | 0 | 2 |
 | `Cube Chamfer Edges` | 34 | 31 | 31&times;4-gon | 6 | 0 | 0 | 0 | 7 |
+| `Cube Two Booleans` | 2229 | 2104 | 2104&times;4-gon | 300 | 0 | 9 | 35 | 5 |
 | `Cylinder` | 1592 | 1590 | 1590&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 | `Flat Loop` | 232 | 232 | 232&times;4-gon | 0 | 0 | 0 | 0 | 0 |
 | `Loopsided Chamfers Cube` | 34 | 32 | 32&times;4-gon | 0 | 0 | 0 | 0 | 8 |
@@ -77,7 +80,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | `Square Plate Small Hole` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 | `Square Plate Small Hole Far Away` | 16 | 14 | 14&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 | `Square Plate Small Hole Scaled Down` | 12 | 10 | 10&times;4-gon | 0 | 0 | 0 | 0 | 8 |
-| `Truncated Cone` | 814 | 812 | 812&times;4-gon | 0 | 0 | 0 | 0 | 8 |
+| `Truncated Cone` | 1664 | 1662 | 1662&times;4-gon | 0 | 0 | 0 | 0 | 8 |
 
 **Non-manifold, unwelded and inward-facing are zero everywhere**, which is the set worth being strict about. "Inward" counts faces pointing the opposite way from the CAD surface under them -- a whole patch can turn over without changing any other number in this table, which is exactly what a matched rim leading a band once did. Open-edge counts are a worst case rather than a quality score: this run commits in the fixture's own face order, and auto-matching can only match an *already committed* neighbour, so a patch baked early can never weld to one baked later.
 
@@ -87,8 +90,9 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 |---|--:|--:|--:|--:|--:|--:|--:|
 | `Carved Rounded Slot` | 1.73 | 10.33 | **10.4** | 10.8° | 58.8° | 69.9° | 1.36 |
 | `Cone` | 1.11 | 2.83 | **9.2** | 31.0° | 68.4° | 85.3° | 0.60 |
-| `Cube Bevel Edges` | 2.71 | 21.73 | **21.7** | 2.8° | 41.9° | 70.6° | 1.72 |
-| `Cube Chamfer Edges` | 1.12 | 5.32 | **7.0** | 0.0° | 35.3° | 45.0° | 0.28 |
+| `Cube Bevel Edges` | 1.50 | 1.92 | **11.2** | 0.0° | 1.0° | 70.6° | 1.09 |
+| `Cube Chamfer Edges` | 1.12 | 4.83 | **6.0** | 0.0° | 35.3° | 45.0° | 0.29 |
+| `Cube Two Booleans` | 1.09 | 5.90 | **2802992.5** | 0.0° | 66.4° | 90.0° | 1.17 |
 | `Cylinder` | 1.01 | 1.08 | **1.1** | 1.5° | 37.9° | 83.3° | 0.09 |
 | `Flat Loop` | 1.10 | 1.11 | **1.1** | 3.5° | 3.9° | 3.9° | 0.04 |
 | `Loopsided Chamfers Cube` | 2.21 | 7.69 | **7.7** | 0.0° | 44.0° | 44.0° | 0.50 |
@@ -98,7 +102,7 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 | `Square Plate Small Hole` | 5.00 | 800.00 | **800.0** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Far Away` | 5.00 | 798.92 | **798.9** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Scaled Down` | 3.54 | 7.07 | **7.1** | 0.0° | 45.0° | 45.0° | 0.68 |
-| `Truncated Cone` | 1.13 | 1.79 | **1.8** | 2.2° | 44.6° | 83.2° | 0.30 |
+| `Truncated Cone` | 1.13 | 1.60 | **1.7** | 2.2° | 43.0° | 84.5° | 0.31 |
 
 Percentiles and worst, never means: the failure mode is a handful of degenerate cells from a fan or a stretched band, and a mean hides exactly that. `Edge cv` is the coefficient of variation of edge length — how uneven the mesh is overall.
 
@@ -121,7 +125,7 @@ Same geometry, same generator chosen for every face — only the order patches a
 | Object | Fixture order | Face id ascending | Face id descending |
 |---|--:|--:|--:|
 | `Cube Chamfer Edges` | 34v / 31f | 32v / 27f | 26v / 23f |
-| `Cube Bevel Edges` | 206v / 186f | 625v / 579f | 1328v / 1280f |
+| `Cube Bevel Edges` | 1035v / 982f | 922v / 865f | 1196v / 1148f |
 
 This is why the golden table in `tests/test_fixtures.py` treats generator and side count as the entries that should hold steady, and vertex and face counts as regression detectors rather than quality scores.
 

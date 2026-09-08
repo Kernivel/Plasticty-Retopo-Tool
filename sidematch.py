@@ -791,6 +791,26 @@ def applied_loops() -> set[int]:
     return {reference.loop for reference in active_sides() if reference.applied}
 
 
+def applied_side_counts() -> dict[int, dict[int, int]]:
+    """{loop: {side within that loop: segments}} for every side a match
+    replaced this generation.
+
+    `applied_loops` says *that* a rim carries a neighbour's vertices, which is
+    all a rim of one cornerless side needs. A rim cut into several -- by
+    isoparms, or by a corner the angle test found -- needs to know *which* of
+    them: only the matched sides hold the neighbour's points, and re-allocating
+    the loop's total by length hands them a count that is not theirs, which is
+    the match thrown away. See `generators.ring.allocate_segments`.
+    """
+    counts: dict[int, dict[int, int]] = {}
+    for reference in active_sides():
+        if not reference.applied:
+            continue
+        counts.setdefault(reference.loop, {})[reference.in_loop] = max(
+            1, len(reference.applied_points) - 1)
+    return counts
+
+
 def ngon_side_segments(
     prepared: "patchprep.PreparedPatch", matched_counts: dict[int, int]
 ) -> list[dict[int, int]]:
