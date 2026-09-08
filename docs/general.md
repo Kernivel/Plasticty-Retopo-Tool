@@ -15,7 +15,7 @@ The viewport draws the keybinds that currently apply to the phase.
 
 **One Plasticity face is one patch**, which is why hovering follows the CAD faces
 exactly rather than an angle threshold — the mesh states the answer outright. See
-[How it works](guide/generators.md) for where that comes from.
+[How it works](how-it-works/index.md) for where that comes from.
 
 ## Where the result goes
 

@@ -6,6 +6,10 @@ When the plugin detects an already committed neighbour, it will try to create an
 This works for both spans and N-gons in both directions.
 For N-gons it will put vertices following the boundary.
 
+This page is the part you drive. For what happens underneath — the pool a side
+is allowed to see, the order the spans and the matches are resolved in — see
+[How it works: matching a neighbour](../how-it-works/matching.md).
+
 <video autoplay loop muted playsinline poster="../../assets/img/matching-crack.jpg">
   <source src="../../assets/video/matching-crack.webm" type="video/webm">
 </video>

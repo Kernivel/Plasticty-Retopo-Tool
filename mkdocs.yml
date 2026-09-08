@@ -53,11 +53,16 @@ nav:
   - Guide:
       - Matching a neighbour: guide/matching.md
       - N-gon mode: guide/ngon.md
-      - How it works: guide/generators.md
       - Faces with a hole: guide/rings.md
       - Symmetry: guide/symmetry.md
       - Hand-editing the result: guide/hand-editing.md
       - Seeing the CAD structure: guide/cad-structure.md
+  - How it works:
+      - Overview: how-it-works/index.md
+      - 1. Identifying a patch: how-it-works/patches.md
+      - 2. Choosing a generator: how-it-works/generators.md
+      - 3. Matching a neighbour: how-it-works/matching.md
+      - 4. Committing: how-it-works/commit.md
   - Reference:
       - Keymap: reference/keymap.md
       - The N-panel: reference/panel.md
