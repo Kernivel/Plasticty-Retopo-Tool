@@ -110,6 +110,10 @@ is actually tested, or rebuild the `.blend` from the oldest supported Blender.
 | `Carved Rounded Slot` | 11 | An obround slot: a long strip curving back on itself, for `shape_corners`. |
 | `Plate And Cylinder` | 14 | A filleted boss — a ring-shaped band that also joins its neighbours smoothly. |
 | `Cube Two Booleans` | 15 | Two bores through a plate, with **incomplete** bands and one rim deliberately cut by isoparms while its partner is left whole. The multi-side ring: matching one side of a rim that has several. Also the file's only `N-Side` patches at 6 and 8 sides, and two faces where every boundary vertex reads as a corner. |
+| `Intersecting Curves` | 15 | Sliver faces: sides of 1.000 against 0.131, a 7.7:1 outline. Nothing here is malformed and every assertion passes — what it exposes is *density*, the default spans handing a long thin face one or two segments across its short direction and a median cell aspect of 7:1 for the whole object. The shape that says the golden table measures correctness and not quality. |
+| `Stairs Beveled` | 31 | The most CAD faces in the file, and the sparsest result — 202 verts for 31 faces, of which 112 edges are open. A step's bevels meet at corners three faces share, so it is span propagation and welding under repetition rather than any one hard surface. Carries `Wedge` and `N-Side` beside the quads, and 6 faces that come back facing inward. |
+| `Stairs Curves and Bevel` | 24 | Steps swept along a curve, and the one shape whose **vertices** leave the CAD surface (0.012%, where every other object reads ~0 by construction). Also carries faces that come back facing inward. |
+| `Non Cordal Bevels` | 18 | Bevels that follow one another at **slightly different widths**. All 18 faces come back Quad, so nothing here is exotic — what it exercises is matching between neighbours whose rows cannot line up one-for-one, and the spanning a narrow bevel is left with once it has taken a wider one's count. |
 | `Shape with holes` | 17 | Faces with five boundary loops each, past what the pipeline handles. |
 | `Sphere` | 1 | A single closed periodic face — no boundary loop at all. |
 | `Torus` | 1 | The same, at genus 1. |
@@ -121,9 +125,6 @@ makes them a measurement rather than three test cases.
 
 ### Not covered
 
-- **Nested collection hierarchy.** Everything sits directly in `Inbox`, so
-  `source_collection_path` returns `[]` and the mirroring in
-  `place_result_object` is barely touched.
 - **Creasing at a tangent border.** `Cube Bevel Edges` has the geometry, but
   nothing asserts that `apply_result_shading` leaves a smooth fillet-to-plane
   border uncreased. A missing assertion, not a missing shape.

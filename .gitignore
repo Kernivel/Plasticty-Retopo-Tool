@@ -3,6 +3,9 @@ __pycache__/
 *.blend1
 .DS_Store
 
+# VS code settings
+*.code-workspace
+
 # JetBrains IDE settings
 .idea/
 
