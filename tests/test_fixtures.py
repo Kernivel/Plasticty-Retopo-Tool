@@ -122,7 +122,7 @@ EXPECTED = {
             (1402, "Quad", 4, 1),
             (1407, "Quad", 4, 1),
         ],
-        max_deviation_pct=19.0,  # measured 13.8606%
+        max_deviation_pct=14.0,  # measured 10.4833%
         open_edges=0,
     ),
     "Cube Bevel Edges": dict(

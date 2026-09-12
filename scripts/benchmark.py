@@ -244,10 +244,18 @@ def quality_report(result_obj):
 
 # --- driving the addon ------------------------------------------------------
 
-def retopologize(context, obj, resolution):
-    """Commit every patch of `obj`. Returns per-patch records."""
+def retopologize(context, obj, resolution, relax=None):
+    """Commit every patch of `obj`. Returns per-patch records.
+
+    `relax` overrides `state.relax_iterations` -- the interior relaxation is a
+    knob whose whole justification is measured here (cell quality against
+    deviation), so it has to be settable from the place the measurements come
+    from. None leaves the scene's own value alone.
+    """
     state = context.scene.plasticity_retop
     state.resolution = resolution
+    if relax is not None:
+        state.relax_iterations = relax
 
     context.view_layer.objects.active = obj
     obj.select_set(True)
@@ -382,6 +390,9 @@ def main():
     parser.add_argument("--resolution", default='MID')
     parser.add_argument("--object", default=None,
                         help="only this object (substring match)")
+    parser.add_argument("--relax", type=int, default=None,
+                        help="interior relaxation passes (0 disables); "
+                             "default: whatever the addon ships with")
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     args = parser.parse_args(argv)
 
@@ -400,7 +411,7 @@ def main():
         return
 
     for obj in targets:
-        records = retopologize(context, obj, args.resolution)
+        records = retopologize(context, obj, args.resolution, args.relax)
         report(obj, records, args.resolution)
 
     pr.operators.end_session(context)

@@ -249,6 +249,68 @@ overlay.disable()
 check("overlay.disable() takes the gizmo with it",
       overlay._mirror_handle is None)
 
+
+# ===========================================================================
+# The patch data debug display
+#
+# Its own handler, installed for the life of the addon rather than for the life
+# of a session: it describes an imported mesh, which is something you look at
+# before any session exists. So nothing in the session's enable/disable pair
+# would ever call it.
+# ===========================================================================
+check("register() installed it", overlay._debug_handle is not None)
+
+overlay.enable_patch_debug()
+check("arming it twice does not stack a second one",
+      overlay._debug_handle is not None)
+
+# Off is the default, and the early exit is the path taken on every redraw of
+# every viewport for anyone not using it.
+state.debug_patch_ids = False
+check("_draw_patch_debug survives with the toggle off",
+      call(overlay._draw_patch_debug, "_draw_patch_debug"))
+
+state.debug_patch_ids = True
+for scope in ('HOVER', 'SELECTED', 'ALL'):
+    for detail in (False, True):
+        for cull in (False, True):
+            state.debug_patch_scope = scope
+            state.debug_patch_detail = detail
+            state.debug_patch_cull = cull
+            check(f"_draw_patch_debug survives scope={scope} "
+                  f"detail={detail} cull={cull}",
+                  call(overlay._draw_patch_debug, "_draw_patch_debug"))
+
+# Hover is fed by a modal that leaves a name in a module global, so the draw
+# path has to cope with the two states nothing else can produce: no hover at
+# all (a reload, a file load, the pointer off the viewport), and a hover naming
+# an object that has since gone away.
+state.debug_patch_scope = 'HOVER'
+overlay.debug_hover = None
+check("_draw_patch_debug survives with no hover",
+      call(overlay._draw_patch_debug, "_draw_patch_debug"))
+overlay.debug_hover = ("NoSuchObject", 7)
+check("...and with a hover naming an object that is gone",
+      call(overlay._draw_patch_debug, "_draw_patch_debug"))
+check("which resolves to no target rather than raising",
+      overlay._patch_debug_target(bpy.context, 'HOVER') is None)
+overlay.debug_hover = None
+
+state.debug_patch_ids = False
+
+# The session's own teardown must NOT take this one with it: it is not the
+# session's, and a debug display that vanishes when a session ends is one that
+# cannot be used to work out why the session went wrong.
+overlay.disable()
+check("overlay.disable() leaves the debug handler alone",
+      overlay._debug_handle is not None)
+
+overlay.disable_patch_debug()
+check("disable_patch_debug() removes it", overlay._debug_handle is None)
+overlay.disable_patch_debug()
+check("and is safe twice", True)
+overlay.enable_patch_debug()  # put it back, as register() left it
+
 print()
 if FAILURES:
     print(f"=== {len(FAILURES)} FAILURE(S): {FAILURES}")

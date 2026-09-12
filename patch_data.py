@@ -1,9 +1,11 @@
 """Parsing of Plasticity "patches" (CAD faces) out of the triangulated mesh
 produced by the plasticity-blender-addon bridge.
 
-The bridge stores two custom properties on the imported mesh:
+The bridge stores two custom properties each imported mesh:
   mesh["groups"]    -- flat list of [loop_start, loop_count] pairs, in polygon order
   mesh["face_ids"]  -- one Plasticity face id per group, same order as the pairs
+
+This means that len(groups) == 2*len(face_ids), with each pair in group matching a value in face_ids.
 
 A "patch" is the set of triangles that share one face_id. This module rebuilds,
 for a given mesh, the polygon->face_id mapping and the boundary loop(s) of each
@@ -20,6 +22,7 @@ by a fingerprint of the mesh's own contents and reused until that changes.
 """
 import array
 import zlib
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -104,6 +107,144 @@ def build_patches(
         patch.poly_indices.append(poly.index)
 
     return patches, face_id_of_poly, face_ids
+
+
+@dataclass
+class GroupEntry:
+    """One `[loop_start, loop_count]` pair, the face id it carries, and the
+    polygons that pair turns out to cover.
+
+    `poly_start`/`poly_count` are derived rather than stored by the bridge: the
+    ranges are expressed in *loop* index space, and one group spans however many
+    polygons the tessellation of that CAD face took.
+    """
+    face_id: int
+    loop_start: int
+    loop_count: int
+    poly_start: int
+    poly_count: int
+
+
+@dataclass
+class GroupReport:
+    """What `mesh["groups"]`/`["face_ids"]` say, and whether they still fit.
+
+    The ranges are read back rather than trusted because `polygon_face_ids`
+    walks them positionally: it advances to the next group when a polygon's
+    `loop_start` passes the current group's end. That is correct exactly while
+    the ranges still tile the mesh's loop array on polygon boundaries -- which
+    they do as imported, and stop doing the moment anything re-topologizes the
+    mesh underneath them (a triangulate, a decimate, a join, a modifier
+    applied). Nothing raises when they don't: polygons are simply assigned to
+    the wrong CAD face, so every patch boundary in the file is quietly wrong.
+    That is the one failure here worth reporting without being asked.
+    """
+    entries: list[GroupEntry]
+    problems: list[str]
+    # polygon size (vertices) -> how many polygons have it. The bridge offers an
+    # untriangulated export, so this says which was used rather than assuming.
+    polygon_sizes: dict[int, int]
+    loop_total: int
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+    @property
+    def triangulated(self) -> bool:
+        """Whether every polygon is a triangle. Vacuously true for an empty mesh.
+
+        Nothing here requires it -- `polygon_face_ids` walks loop ranges and
+        `geometry.build_bvh_with_polygon_map` fan-triangulates whatever it is
+        given -- so this is reported, never enforced.
+        """
+        return set(self.polygon_sizes) <= {3}
+
+
+def group_report(mesh: "bpy.types.Mesh") -> GroupReport:
+    """Read `groups`/`face_ids` back out of `mesh`, with their integrity.
+
+    Walks the mesh once, at C speed where it can: the polygon loop ranges come
+    out through `foreach_get` rather than attribute access per polygon, since a
+    real part has tens of thousands of them and this is asked for from a panel.
+    """
+    groups = list(mesh.get("groups") or ())
+    face_ids = list(mesh.get("face_ids") or ())
+    loop_total = len(mesh.loops)
+
+    n_polys = len(mesh.polygons)
+    starts = array.array("i", bytes(4 * n_polys))
+    totals = array.array("i", bytes(4 * n_polys))
+    if n_polys:
+        mesh.polygons.foreach_get("loop_start", starts)
+        mesh.polygons.foreach_get("loop_total", totals)
+    sizes = dict(Counter(totals))
+
+    problems: list[str] = []
+    if not groups or not face_ids:
+        problems.append(
+            "No groups/face_ids on this mesh -- not a Plasticity import, or the "
+            "custom properties were lost")
+        return GroupReport([], problems, sizes, loop_total)
+
+    if len(groups) != 2 * len(face_ids):
+        problems.append(
+            f"{len(groups)} group values for {len(face_ids)} face ids "
+            f"(expected {2 * len(face_ids)})")
+
+    # Which loop indices a polygon actually begins at. A group range that starts
+    # or ends anywhere else cannot be walked back to a whole polygon, which is
+    # the corruption worth naming -- `polygon_face_ids` would hand that
+    # polygon's triangles to whichever face the range happens to straddle.
+    poly_at_loop = {int(start): index for index, start in enumerate(starts)}
+
+    entries: list[GroupEntry] = []
+    expected = 0
+    pairs = min(len(face_ids), len(groups) // 2)
+    for i in range(pairs):
+        face_id = int(face_ids[i])
+        start = int(groups[i * 2])
+        count = int(groups[i * 2 + 1])
+        end = start + count
+
+        if count <= 0:
+            problems.append(f"Face {face_id}: empty group (loop_count={count})")
+        if start != expected:
+            kind = "gap" if start > expected else "overlap"
+            problems.append(
+                f"Face {face_id}: {kind} before it -- starts at loop {start}, "
+                f"the previous group ended at {expected}")
+        if start not in poly_at_loop:
+            problems.append(
+                f"Face {face_id}: loop_start {start} is not the start of any "
+                f"polygon -- the mesh has been re-topologized since import")
+        if end != loop_total and end not in poly_at_loop:
+            problems.append(
+                f"Face {face_id}: its range ends at loop {end}, mid-polygon")
+
+        poly_start = poly_at_loop.get(start, -1)
+        poly_end = poly_at_loop.get(end, n_polys)
+        poly_count = max(0, poly_end - poly_start) if poly_start >= 0 else 0
+
+        entries.append(GroupEntry(
+            face_id=face_id, loop_start=start, loop_count=count,
+            poly_start=poly_start, poly_count=poly_count))
+        expected = end
+
+    if expected != loop_total:
+        problems.append(
+            f"The groups cover {expected} loops, the mesh has {loop_total}")
+
+    duplicates = [fid for fid, n in Counter(e.face_id for e in entries).items() if n > 1]
+    if duplicates:
+        # Not fatal -- `build_patches` merges them into one patch, which is
+        # probably what was meant -- but the bridge emits one group per face, so
+        # this says the file is not what this code was written against.
+        problems.append(
+            "Face id repeated across groups: "
+            + ", ".join(str(fid) for fid in duplicates[:6]))
+
+    return GroupReport(entries, problems, sizes, loop_total)
 
 
 def _edge_key(a: int, b: int) -> tuple[int, int]:

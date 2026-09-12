@@ -50,6 +50,36 @@ def _wire_opacity_update(
     mesh_build.apply_wireframe_opacity(context)
 
 
+def _patch_debug_update(
+    self: "RetopPatchState", context: bpy.types.Context
+) -> None:
+    """Start or stop the cursor-following modal, then redraw.
+
+    Hover needs a mouse position and a draw handler has none, so the debug
+    display's Hover scope is fed by a modal that does nothing but read it.
+    Starting it is deferred through a timer rather than done here: an update
+    callback runs with a restricted context, and `bpy.ops` with INVOKE_DEFAULT
+    wants a window -- the same reason the reload operator defers its own work.
+    """
+    from . import operators
+    operators.sync_patch_hover()
+    _redraw_update(self, context)
+
+
+def _redraw_update(self: "RetopPatchState", context: bpy.types.Context) -> None:
+    """Tag the 3D views, for a property only a draw handler reads.
+
+    Blender redraws the viewport for a property some *Blender* drawing depends
+    on; an addon's own overlay is not that, so toggling one from the sidebar
+    would otherwise take effect on the next mouse move over the viewport and
+    read as a dead checkbox.
+    """
+    for window in getattr(context.window_manager, "windows", ()):
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
 class RetopPatchState(bpy.types.PropertyGroup):
     active_face_id: bpy.props.IntProperty(name="Active Face Id", default=-1)
     generator_name: bpy.props.StringProperty(name="Generator", default="")
@@ -229,6 +259,20 @@ class RetopPatchState(bpy.types.PropertyGroup):
     reproject: bpy.props.BoolProperty(
         name="Reproject", default=True,
         description="Snap interior grid vertices onto the original CAD surface to follow curvature/fillets",
+        update=_live_update,
+    )
+    relax_iterations: bpy.props.IntProperty(
+        name="Relax", default=8, min=0, max=30, soft_max=16,
+        description="Even out the interior cells after the grid is built, without moving "
+                     "its boundary: each pass pulls every interior vertex towards the average "
+                     "of its neighbours and puts it back on the CAD surface. This is what "
+                     "un-bunches the cells along a concave edge -- the rim of a hole, a slot's "
+                     "flank -- where a grid between opposite sides crowds them. 0 disables it; "
+                     "it needs Reproject, since without the surface to land on it would only "
+                     "shrink the patch inwards. A cap rather than a dose: each pass only takes "
+                     "the moves that improve the worst cell they touch, and the whole thing "
+                     "stops as soon as no cell is badly shaped, so a patch that is already "
+                     "clean costs one look and comes back untouched",
         update=_live_update,
     )
 
@@ -605,6 +649,49 @@ class RetopPatchState(bpy.types.PropertyGroup):
         name="Keybind Overlay Size", default=1.0, min=0.5, max=2.5,
         description="Size of the keybind hints drawn at the bottom of the viewport. They are "
                      "drawn in pixels, so they shrink on a 4K screen and crowd a small one",
+    )
+
+    # --- patch data debug display (see cad_display.patch_labels) --------------
+    #
+    # The raw numbers the bridge writes, on screen. Not a retopology control:
+    # this is for reading the *input*, when a patch comes out looking like it
+    # belongs to the wrong CAD face and the question is what the mesh actually
+    # says. Behind Developer Mode in the panel for that reason.
+    debug_patch_ids: bpy.props.BoolProperty(
+        name="Show Patch Data", default=False,
+        description="Write each patch's Plasticity face id over the surface, with the "
+                     "group range the bridge recorded for it. Works with no session running, "
+                     "and in Edit Mode: it describes the imported mesh, not the retopology",
+        update=_patch_debug_update,
+    )
+    debug_patch_scope: bpy.props.EnumProperty(
+        name="Label",
+        items=[
+            ('HOVER', "Hover", "The patch under the cursor, in Object or Edit Mode", '', 0),
+            ('SELECTED', "Selected", "The patches with a selected polygon (Object Mode: "
+                                      "Blender writes selection back to the mesh on leaving "
+                                      "Edit Mode)", '', 1),
+            ('ALL', "All", "Every patch at once -- a wall of text on a real part", '', 2),
+        ],
+        # Hover by default: it is the only one that answers the question where
+        # the question is asked, without a selection to make first and unmake
+        # afterwards.
+        default='HOVER',
+        description="Which patches to label",
+        update=_patch_debug_update,
+    )
+    debug_patch_detail: bpy.props.BoolProperty(
+        name="Show Loop Range", default=True,
+        description="Include loop_start, loop_count and the polygon count under each face id. "
+                     "Off: just the id, which is what stays readable with many patches labelled",
+        update=_redraw_update,
+    )
+    debug_patch_cull: bpy.props.BoolProperty(
+        name="Front Faces Only", default=True,
+        description="Skip the patches facing away from the view. The labels are screen-space "
+                     "text with no depth to test, so without this the far side of a closed part "
+                     "writes its labels over the near side",
+        update=_redraw_update,
     )
 
     # --- collapsible UI sections (sub-sections inside a tab) ---

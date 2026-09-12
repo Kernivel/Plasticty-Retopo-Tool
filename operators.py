@@ -4,6 +4,7 @@ import bpy
 import mathutils
 from bpy_extras import view3d_utils
 
+from . import cad_display
 from . import constants
 from . import patch_data
 from . import geometry
@@ -551,6 +552,19 @@ def _generate_for_face(
         # vertices, and the allocation may not redistribute those away.
         span_settings["matched_sides"] = sidematch.applied_side_counts()
     result = generator.generate(generation_input, span_settings, bvh=bvh)
+
+    # Cell shape, once the grid exists. Every generator here interpolates
+    # between opposite sides, which stops being the right answer as soon as the
+    # sides do not face each other -- a concave rim bunches the cells against
+    # it, an acute corner collapses them -- and none of that is decided by the
+    # boundary, so no choice of corners or spans can fix it. The boundary is
+    # pinned, so this changes nothing a neighbour welds to, and it needs the
+    # BVH: see `geometry.relax_interior_points` for why there is nothing safe
+    # to do with reprojection off.
+    if bvh is not None:
+        geometry.relax_interior_points(
+            result.verts, result.faces, result.boundary_local_indices,
+            bvh, state.relax_iterations)
 
     mesh_build.update_preview_object(context, obj, result, corner_source_ids)
     return PatchPreview(generator, num_sides, prepared.num_loops, (span_u, span_v, span),
@@ -1699,6 +1713,12 @@ class RETOP_OT_session(bpy.types.Operator):
         # moment the pointer is elsewhere so a stale tooltip can't linger.
         overlay.cursor_window = ((event.mouse_x, event.mouse_y)
                                  if over_viewport else None)
+
+        # The patch data display follows the cursor too, and its own modal is
+        # starved while this one runs -- see `refresh_debug_hover`. Fed from the
+        # move this modal already has, and a no-op unless that display is on.
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            refresh_debug_hover(context, event.mouse_x, event.mouse_y)
 
         # Anything outside the 3D viewport (N-panel, properties, ...) must stay
         # fully interactive -- that's where spans get adjusted during ADJUST.
@@ -2881,6 +2901,186 @@ class RETOP_OT_toggle_surface_flow(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _patch_hover_wanted(context: bpy.types.Context) -> bool:
+    state = getattr(context.scene, "plasticity_retop", None)
+    return bool(state is not None
+                and getattr(state, "debug_patch_ids", False)
+                and getattr(state, "debug_patch_scope", 'HOVER') == 'HOVER')
+
+
+def _start_patch_hover() -> None:
+    """Invoke the hover modal in the first 3D viewport there is.
+
+    Run from a timer, so `bpy.context` is the real one but there is no area to
+    invoke into -- a modal operator has to be given a window and a VIEW_3D area
+    or it has nothing to register its handler on.
+    """
+    if RETOP_OT_patch_hover.running or not _patch_hover_wanted(bpy.context):
+        return
+    window = next((w for w in bpy.context.window_manager.windows), None)
+    if window is None:
+        return
+    area = next((a for a in window.screen.areas if a.type == 'VIEW_3D'), None)
+    if area is None:
+        # No viewport to hover over. Nothing to start, and nothing is wrong:
+        # the next sync (a toggle, a file load) will try again.
+        return
+    try:
+        with bpy.context.temp_override(window=window, area=area):
+            bpy.ops.retop.patch_hover('INVOKE_DEFAULT')
+    except (RuntimeError, AttributeError):
+        # No context to invoke into (headless, or mid-load). The display simply
+        # shows nothing until something asks again.
+        pass
+
+
+def sync_patch_hover() -> None:
+    """Bring the hover modal in line with the scene properties.
+
+    Called from the property update and from `load_post`. The modal stops
+    itself when the toggle goes off -- it checks on every event -- so this only
+    ever has to handle the starting half.
+    """
+    if not _patch_hover_wanted(bpy.context):
+        return
+    if bpy.app.timers.is_registered(_start_patch_hover):
+        return
+    bpy.app.timers.register(_start_patch_hover, first_interval=0.0)
+
+
+def refresh_debug_hover(
+    context: bpy.types.Context, mouse_x: float, mouse_y: float
+) -> None:
+    """Point the patch data display at whatever is under (mouse_x, mouse_y).
+
+    Shared by `RETOP_OT_patch_hover` and by the **session** modal, which has to
+    feed it: `_modal` answers a mouse move with RUNNING_MODAL, and a modal added
+    to the stack before it never sees the event -- so a display switched on
+    before a session started would freeze for the length of it, which is exactly
+    when the raw face ids are being read. One raycast, and only while the
+    display is on and following the cursor: `_patch_hover_wanted` is the first
+    thing checked.
+
+    Off the viewport the hover is *dropped* rather than left standing, or it
+    would go on naming a patch the cursor is nowhere near.
+    """
+    if not _patch_hover_wanted(context):
+        return
+
+    area = context.area
+    region, _rv3d = viewport_region(context)
+    found = None
+    if (area is not None and area.type == 'VIEW_3D'
+            and point_in_viewport(area, region, mouse_x, mouse_y)):
+        origin, direction = ray_from_window(context, mouse_x, mouse_y)
+        if origin is not None and direction is not None:
+            hit_obj, face_id, _distance = _raycast_patch_ray(
+                context, origin, direction, area.spaces.active)
+            if hit_obj is not None and face_id is not None:
+                found = (hit_obj.name, face_id)
+
+    if found != overlay.debug_hover:
+        overlay.debug_hover = found
+        _tag_viewports_redraw(context)
+
+
+class RETOP_OT_patch_hover(bpy.types.Operator):
+    """Track the cursor so the patch debug display can follow it.
+
+    A draw handler is given no event, so hovering cannot be read from one --
+    the session solves this by having its own modal leave the position in
+    `overlay.cursor_window`, and this is the same arrangement for the debug
+    display, which has to work with no session at all.
+
+    It reads and never writes: every event is passed straight back to Blender,
+    so this can sit under the knife, the loop cut, a transform or Blender's own
+    selection without taking anything from them. The one thing it must not do
+    is outlive its toggle, so that is checked on every event rather than
+    trusted to whoever turned it off.
+
+    The hover lands in a module global on `overlay` rather than in a scene
+    property: a scene property written on every mouse move marks the file as
+    modified, and nothing about looking at a mesh should do that.
+    """
+    bl_idname = "retop.patch_hover"
+    bl_label = "Follow Cursor for Patch Data"
+    bl_options = {'REGISTER'}
+
+    # Not an annotation: a class attribute on a registered class is read by the
+    # registration walk, and this is ours, not Blender's. One instance at a
+    # time is the whole point -- two would fight over the same global.
+    running = False
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return not cls.running and _patch_hover_wanted(context)
+
+    def invoke(self, context: bpy.types.Context, _event: bpy.types.Event) -> set[str]:
+        RETOP_OT_patch_hover.running = True
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _finish(self, context: bpy.types.Context) -> set[str]:
+        RETOP_OT_patch_hover.running = False
+        overlay.debug_hover = None
+        _tag_viewports_redraw(context)
+        return {'CANCELLED'}
+
+    def modal(self, context: bpy.types.Context, event: bpy.types.Event) -> set[str]:
+        if not _patch_hover_wanted(context):
+            return self._finish(context)
+
+        if event.type not in ('MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'):
+            return {'PASS_THROUGH'}
+
+        refresh_debug_hover(context, event.mouse_x, event.mouse_y)
+        return {'PASS_THROUGH'}
+
+
+class RETOP_OT_print_patch_data(bpy.types.Operator):
+    """The whole groups/face_ids table, to the system console."""
+    bl_idname = "retop.print_patch_data"
+    bl_label = "Print Patch Data to Console"
+    bl_description = ("Write every patch's face id and [loop_start, loop_count] range to the "
+                       "system console, with any problems found in them. A part has hundreds "
+                       "of faces, which is a console's job rather than a sidebar's")
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        obj = context.active_object
+        return obj is not None and obj.type == 'MESH'
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        obj = context.active_object
+        mesh = obj.data
+        report = cad_display.integrity(mesh)
+
+        print(f"\n=== Plasticity patch data: {obj.name} ({mesh.name}) ===")
+        sizes = ", ".join(f"{n}-gon x{count}" if n != 3 else f"tri x{count}"
+                          for n, count in sorted(report.polygon_sizes.items()))
+        print(f"  {len(report.entries)} patches, {report.loop_total} loops, "
+              f"{len(mesh.polygons)} polygons ({sizes or 'none'})")
+        print(f"  triangulated: {report.triangulated}")
+        print(f"  {'face_id':>10} {'loop_start':>11} {'loop_count':>11} "
+              f"{'polys':>7} {'first poly':>11}")
+        for entry in report.entries:
+            print(f"  {entry.face_id:>10} {entry.loop_start:>11} "
+                  f"{entry.loop_count:>11} {entry.poly_count:>7} "
+                  f"{entry.poly_start:>11}")
+
+        if report.problems:
+            print(f"  --- {len(report.problems)} problem(s) ---")
+            for problem in report.problems:
+                print(f"  ! {problem}")
+            self.report({'WARNING'},
+                        f"{len(report.problems)} problem(s) -- see the console")
+        else:
+            self.report({'INFO'},
+                        f"{len(report.entries)} patches written to the console")
+        return {'FINISHED'}
+
+
 class RETOP_OT_back(bpy.types.Operator):
     """One step out per press: clear typing, discard, leave the object, end.
 
@@ -3025,9 +3225,24 @@ def _on_undo_redo(
             state.session_phase = 'PATCH'
 
 
+@bpy.app.handlers.persistent
+def _on_load_post(_path: str = "") -> None:
+    """Restart the patch hover modal for a file that had it switched on.
+
+    A modal does not survive a file load, but the scene property that asks for
+    one does -- Blender stores it with the rest of the scene. Without this, a
+    file saved with the debug display on reopens with the display frozen on
+    whatever the cursor last pointed at, which reads as an overlay that has
+    stopped working rather than as a modal that is no longer there.
+    """
+    overlay.debug_hover = None
+    sync_patch_hover()
+
+
 _HANDLERS = (
     ("undo_post", "_on_undo_redo"),
     ("redo_post", "_on_undo_redo"),
+    ("load_post", "_on_load_post"),
 )
 
 
@@ -3035,6 +3250,7 @@ def _register_handlers() -> None:
     _unregister_handlers()  # never stack duplicates across an addon reload
     bpy.app.handlers.undo_post.append(_on_undo_redo)
     bpy.app.handlers.redo_post.append(_on_undo_redo)
+    bpy.app.handlers.load_post.append(_on_load_post)
 
 
 def _unregister_handlers() -> None:
@@ -3068,6 +3284,8 @@ CLASSES = (
     RETOP_OT_toggle_match_mode,
     RETOP_OT_toggle_cad_edges,
     RETOP_OT_toggle_surface_flow,
+    RETOP_OT_patch_hover,
+    RETOP_OT_print_patch_data,
     RETOP_OT_back,
     RETOP_OT_open_keymap_prefs,
     RETOP_OT_reset_corner_methods,
@@ -3140,6 +3358,18 @@ def register() -> None:
         bpy.utils.register_class(cls)
     _register_handlers()
     _register_keymaps()
+    # Installed for the life of the addon, unlike the session's overlay: the
+    # patch data display describes an *imported* mesh, which is something you
+    # look at before any session exists. Its callback early-outs on the scene
+    # toggle, so the cost when it is off is one getattr per redraw -- and it can
+    # never be found missing after a file load, which is what arming a handler
+    # from a property update would risk.
+    overlay.enable_patch_debug()
+    # A reload unregisters the operator class out from under any running modal
+    # instance, so the flag is cleared on the way in rather than trusted; then
+    # a file that had the hover on gets it back.
+    RETOP_OT_patch_hover.running = False
+    sync_patch_hover()
 
 
 def unregister() -> None:
@@ -3147,6 +3377,9 @@ def unregister() -> None:
     # mid-session); leaving its draw handler behind would leak an overlay that
     # nothing can remove afterwards.
     overlay.disable()
+    overlay.disable_patch_debug()
+    overlay.debug_hover = None
+    RETOP_OT_patch_hover.running = False
     _unregister_keymaps()
     _unregister_handlers()
     for cls in reversed(CLASSES):

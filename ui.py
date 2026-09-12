@@ -2,15 +2,18 @@ from typing import TYPE_CHECKING
 
 import bpy
 
+from . import cad_display
 from . import constants
 from . import keymap
 from . import mesh_build
 from . import operators
+from . import overlay
 from . import prefs
 from . import sidematch
 from . import version
 
 if TYPE_CHECKING:
+    from . import patch_data
     from . import state as state_mod
 
 
@@ -155,6 +158,9 @@ def _draw_warnings(
     if context.scene.plasticity_retop.session_phase == 'TWEAK':
         return
 
+    if obj is not None and obj.type == 'MESH' and obj.data.get("face_ids"):
+        _draw_group_integrity(layout, obj)
+
     if obj is None or obj.type != 'MESH' or obj.data.get("face_ids"):
         return
 
@@ -175,6 +181,38 @@ def _draw_warnings(
     warn.alert = True
     warn.label(text=f"'{obj.name}' has no Plasticity face data", icon='ERROR')
     warn.label(text="Re-import it through the bridge.")
+
+
+def _draw_group_integrity(
+    layout: bpy.types.UILayout, obj: bpy.types.Object
+) -> None:
+    """Say so when `groups`/`face_ids` no longer describe the mesh they are on.
+
+    Shown to everyone, not behind Developer Mode, and only when something is
+    actually wrong -- the same judgement the crack report makes. `polygon_face_ids`
+    walks the group ranges positionally and cannot detect that they have stopped
+    lining up with the polygons: it simply hands a polygon's triangles to
+    whichever CAD face the range it falls in happens to name. Every patch in the
+    file is then wrong, with nothing anywhere saying why, which is the one
+    failure in the input contract worth reporting unasked.
+
+    The usual cause is the mesh having been re-topologized after import --
+    triangulated, decimated, joined, or a modifier applied -- since the bridge
+    writes these once and nothing updates them afterwards.
+    """
+    report = cad_display.integrity(obj.data)
+    if report.ok:
+        return
+
+    warn = layout.box().column(align=True)
+    warn.alert = True
+    warn.label(text="Patch data does not match this mesh", icon='ERROR')
+    for problem in report.problems[:3]:
+        warn.label(text=problem)
+    if len(report.problems) > 3:
+        warn.label(text=f"...and {len(report.problems) - 3} more")
+    warn.label(text="Re-import it, or undo what changed the mesh.")
+    warn.operator("retop.print_patch_data", icon='CONSOLE')
 
 
 def _draw_active_patch(
@@ -267,6 +305,12 @@ def _draw_active_patch(
         col.prop(state, "span")
 
     box.prop(state, "reproject")
+    relax = box.row()
+    # The relaxation is a step-then-project loop, so with reprojection off there
+    # is no surface to land on and it would pull the interior inside the patch.
+    # Greyed out rather than quietly ignored.
+    relax.enabled = state.reproject
+    relax.prop(state, "relax_iterations")
 
     row = box.row(align=True)
     row.operator("retop.commit_patch",
@@ -488,19 +532,17 @@ def _draw_tab_display(
     body = _section(layout, state, "show_appearance",
                     "Appearance", icon='SHADING_RENDERED')
     if body:
-        body.label(text="Preview", icon='SHADING_RENDERED')
+        body.prop(state, "result_offset", text="General Offset")
+
+        body.label(text="Preview geometry", icon='SHADING_RENDERED')
         body.prop(state, "preview_color", text="Color")
         body.prop(state, "preview_alpha", slider=True, text="Alpha")
 
         body.separator()
-        body.label(text="Result", icon='SHADING_SOLID')
-        if result_obj is not None:
-            body.label(text=result_obj.name, icon='OUTLINER_OB_MESH')
+        body.label(text="Result geometry", icon='SHADING_SOLID')
         body.prop(state, "result_color", text="Color")
         body.prop(state, "result_alpha", slider=True, text="Alpha")
 
-        body.separator()
-        body.prop(state, "result_offset", text="Offset")
         body.separator()
         body.prop(state, "result_see_through")
         body.prop(state, "result_show_wire")
@@ -658,7 +700,134 @@ def _draw_tab_keys(
     box.label(text="and to other addons (Hard Ops' Alt+X)")
 
 
-def _draw_tab_system(layout: bpy.types.UILayout) -> None:
+def _draw_patch_debug(
+    layout: bpy.types.UILayout,
+    state: "state_mod.RetopPatchState",
+    obj: bpy.types.Object | None,
+) -> None:
+    """The raw bridge numbers, for when a patch is not the face you expected.
+
+    Behind Developer Mode: this describes the *input* -- `mesh["groups"]` and
+    `mesh["face_ids"]`, in the bridge's own terms -- and nothing about it is
+    actionable while retopologizing. Someone who installed a release zip has no
+    use for a loop index. The integrity warning is the half of this that is
+    everyone's, and it is drawn with the other warnings rather than here.
+    """
+    body = layout.box().column()
+    body.label(text="Patch Data", icon='MESH_DATA')
+    body.separator()
+
+    if obj is None or obj.type != 'MESH' or not obj.data.get("face_ids"):
+        body.label(text="Select a Plasticity mesh", icon='INFO')
+        return
+
+    body.prop(state, "debug_patch_ids")
+    sub = body.column(align=True)
+    sub.enabled = state.debug_patch_ids
+    sub.prop(state, "debug_patch_scope")
+    sub.prop(state, "debug_patch_detail")
+    cull = sub.row()
+    # A hovered patch is the one the cursor is on, so it is in front by
+    # construction and the overlay ignores this. Greyed out rather than left
+    # live: a checkbox that does nothing reads as a broken one.
+    cull.enabled = state.debug_patch_scope != 'HOVER'
+    cull.prop(state, "debug_patch_cull")
+
+    report = cad_display.integrity(obj.data)
+    body.separator()
+    body.label(text=obj.name, icon='OUTLINER_OB_MESH')
+    body.label(text=f"{len(report.entries)} patches · {report.loop_total} loops")
+
+    # Whether the bridge's Triangulate option was on. Reported, never enforced:
+    # nothing here needs triangles -- the group walk is in loop-index space and
+    # the BVH fan-triangulates whatever it is handed -- so this is here to
+    # answer "what am I actually looking at", not to ask for a re-export.
+    sizes = sorted(report.polygon_sizes.items())
+    if report.triangulated:
+        body.label(text="Triangulated", icon='MESH_DATA')
+    else:
+        body.label(text="Not triangulated: "
+                        + ", ".join(f"{n}-gon x{count}" for n, count in sizes),
+                   icon='INFO')
+
+    body.separator()
+    if not state.debug_patch_ids:
+        body.label(text="Switch it on to read a patch", icon='INFO')
+    elif state.debug_patch_scope == 'HOVER':
+        _draw_patch_debug_hover(body)
+    elif state.debug_patch_scope == 'SELECTED':
+        _draw_patch_debug_selected(body, obj, report)
+    else:
+        body.label(text=f"Labelling all {len(report.entries)} patches")
+
+    body.separator()
+    body.operator("retop.print_patch_data", icon='CONSOLE')
+
+
+def _draw_patch_debug_hover(layout: bpy.types.UILayout) -> None:
+    """The patch under the cursor, named here as well as over the surface.
+
+    The panel is a region of the same VIEW_3D area the hover modal tags for
+    redraw, so this follows the cursor for free -- and it is worth having beside
+    the viewport label rather than instead of it: the label has to stay terse to
+    sit on a surface, while the question being asked is often "is this even the
+    object I think it is", which wants a name.
+    """
+    hovered = overlay.debug_hover
+    if hovered is None:
+        layout.label(text="Point at a patch in the viewport",
+                     icon='RESTRICT_SELECT_ON')
+        layout.label(text="Object Mode or Edit Mode -- either.")
+        return
+
+    name, face_id = hovered
+    hovered_obj = bpy.data.objects.get(name)
+    if hovered_obj is None or hovered_obj.type != 'MESH':
+        return  # gone since the last mouse move; the next one will say so
+
+    table = layout.box().column(align=True)
+    table.label(text=hovered_obj.name, icon='OUTLINER_OB_MESH')
+    entry = next((e for e in cad_display.integrity(hovered_obj.data).entries
+                  if e.face_id == face_id), None)
+    if entry is None:
+        # The groups name no such face id. `_draw_group_integrity` is already
+        # saying why, so this only has to not look like an empty box.
+        table.label(text=f"#{face_id}: no group for it", icon='ERROR')
+        return
+    table.label(text=f"#{entry.face_id}")
+    table.label(text=f"loop {entry.loop_start}+{entry.loop_count}")
+    table.label(text=f"{entry.poly_count} polygons")
+
+
+def _draw_patch_debug_selected(
+    layout: bpy.types.UILayout,
+    obj: bpy.types.Object,
+    report: "patch_data.GroupReport",
+) -> None:
+    wanted = cad_display.selected_face_ids(obj.data)
+    selected = [entry for entry in report.entries if entry.face_id in wanted]
+    if not selected:
+        # Selection flags are only written back to the mesh on leaving Edit
+        # Mode, so a patch picked with L reads as nothing at all until then --
+        # which is the whole reason Hover is the default. Saying so beats an
+        # empty box that looks broken.
+        layout.label(text="No patch selected", icon='RESTRICT_SELECT_ON')
+        layout.label(text="Select in Object Mode, or use Hover.")
+        return
+    layout.label(text=f"Selected ({len(selected)}):")
+    table = layout.box().column(align=True)
+    for entry in selected[:8]:
+        table.label(text=f"#{entry.face_id} · loop {entry.loop_start}"
+                         f"+{entry.loop_count} · {entry.poly_count} poly")
+    if len(selected) > 8:
+        table.label(text=f"...and {len(selected) - 8} more")
+
+
+def _draw_tab_system(
+    layout: bpy.types.UILayout,
+    state: "state_mod.RetopPatchState",
+    obj: bpy.types.Object | None,
+) -> None:
     body = layout.box().column()
     body.label(text="System", icon='PREFERENCES')
     body.separator()
@@ -677,6 +846,9 @@ def _draw_tab_system(layout: bpy.types.UILayout) -> None:
         body.operator("retop.reload_addon", text="Reload Addon Only", icon='FILE_REFRESH')
     else:
         body.label(text="Reload button: Preferences > Add-ons > Developer Mode")
+
+    if prefs.developer_mode():
+        _draw_patch_debug(layout, state, obj)
 
 
 class VIEW3D_PT_retop(bpy.types.Panel):
@@ -740,7 +912,7 @@ class VIEW3D_PT_retop(bpy.types.Panel):
         elif tab == 'KEYS':
             _draw_tab_keys(layout, state)
         elif tab == 'SYSTEM':
-            _draw_tab_system(layout)
+            _draw_tab_system(layout, state, obj)
 
 
 CLASSES = (VIEW3D_PT_retop,)

@@ -10,9 +10,9 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 
 | | |
 |---|---|
-| Generated | 2026-09-09 |
+| Generated | 2026-09-13 |
 | Blender | 5.1.1 |
-| Addon | 0.66.0 (2026-09-08-b) |
+| Addon | 0.67.0 (2026-09-12-b) |
 | Resolution | MID |
 | Fixture | `tests/fixtures/TestCases.blend`, 21 objects |
 
@@ -23,7 +23,7 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | Object | Source tris | CAD faces | Generators | Result | Deviation max | Open edges |
 |---|--:|--:|---|--:|--:|--:|
 | `Carved Rounded Slot` | 156 | 11 | 10&nbsp;Quad, 1&nbsp;Ring | 172v / 131f | 0.0690% | 90 |
-| `Cone` | 188 | 2 | 2&nbsp;Quad | 614v / 612f | 13.8606% | 0 |
+| `Cone` | 188 | 2 | 2&nbsp;Quad | 614v / 612f | 10.4833% | 0 |
 | `Cube Bevel Edges` | 1556 | 13 | 9&nbsp;Quad, 2&nbsp;Triangle, 2&nbsp;Wedge | 1035v / 982f | 0.4331% | 118 |
 | `Cube Chamfer Edges` | 20 | 9 | 8&nbsp;Quad, 1&nbsp;N-Side | 34v / 31f | 0.0001% | 6 |
 | `Cube Two Booleans` | 493 | 15 | 8&nbsp;Quad, 4&nbsp;N-Side, 3&nbsp;Ring | 2045v / 1947f | 11.1111% | 244 |
@@ -48,11 +48,11 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 
 | Object | mean | rms | p95 | max | vertex max |
 |---|--:|--:|--:|--:|--:|
-| `Carved Rounded Slot` | 0.0059% | 0.0161% | 0.0431% | **0.0690%** | 0.0007% |
-| `Cone` | 0.0631% | 0.4245% | 0.1759% | **13.8606%** | 0.0000% |
-| `Cube Bevel Edges` | 0.0397% | 0.0863% | 0.2083% | **0.4331%** | 0.0013% |
+| `Carved Rounded Slot` | 0.0059% | 0.0161% | 0.0431% | **0.0690%** | 0.0002% |
+| `Cone` | 0.0540% | 0.3095% | 0.1715% | **10.4833%** | 0.0000% |
+| `Cube Bevel Edges` | 0.0397% | 0.0864% | 0.2083% | **0.4331%** | 0.0013% |
 | `Cube Chamfer Edges` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
-| `Cube Two Booleans` | 0.0793% | 0.3960% | 0.2351% | **11.1111%** | 0.0005% |
+| `Cube Two Booleans` | 0.0796% | 0.3972% | 0.2428% | **11.1111%** | 0.0005% |
 | `Cylinder` | 0.0171% | 0.0247% | 0.0464% | **0.0602%** | 0.0006% |
 | `Flat Loop` | 0.0153% | 0.0263% | 0.0562% | **0.0808%** | 0.0000% |
 | `Intersecting Curves` | 0.0033% | 0.0389% | 0.0181% | **2.6315%** | 0.0002% |
@@ -64,8 +64,8 @@ blender tests/fixtures/TestCases.blend --background --python scripts/gen_results
 | `Square Plate Small Hole` | 0.0000% | 0.0000% | 0.0000% | **0.0001%** | 0.0000% |
 | `Square Plate Small Hole Far Away` | 0.0000% | 0.0001% | 0.0000% | **0.0007%** | 0.0000% |
 | `Square Plate Small Hole Scaled Down` | 0.0059% | 0.0172% | 0.0441% | **0.0661%** | 0.0001% |
-| `Stairs Beveled` | 0.0724% | 0.1804% | 0.5608% | **0.8616%** | 0.0000% |
-| `Stairs Curves and Bevel` | 0.0095% | 0.0713% | 0.0233% | **1.6727%** | 0.0118% |
+| `Stairs Beveled` | 0.0726% | 0.1804% | 0.5608% | **0.8616%** | 0.0000% |
+| `Stairs Curves and Bevel` | 0.0095% | 0.0713% | 0.0234% | **1.6727%** | 0.0118% |
 | `Truncated Cone` | 0.0076% | 0.0121% | 0.0251% | **0.0413%** | 0.0009% |
 
 A large `max` against a modest `p95` means a few samples are far out rather than the whole surface being off — which is the signature of a hole being paved over, or an apex no grid represents.
@@ -100,24 +100,24 @@ A large `max` against a modest `p95` means a few samples are far out rather than
 
 | Object | Aspect p50 | p95 | max | Skew p50 | p95 | max | Edge cv |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| `Carved Rounded Slot` | 1.73 | 10.33 | **10.4** | 10.8° | 58.8° | 69.9° | 1.36 |
-| `Cone` | 1.11 | 2.83 | **9.2** | 31.0° | 68.4° | 85.3° | 0.60 |
+| `Carved Rounded Slot` | 1.70 | 10.00 | **10.0** | 10.9° | 55.0° | 69.9° | 1.36 |
+| `Cone` | 1.11 | 2.33 | **2.9** | 28.8° | 67.3° | 85.3° | 0.48 |
 | `Cube Bevel Edges` | 1.50 | 1.92 | **11.2** | 0.0° | 1.0° | 70.6° | 1.09 |
 | `Cube Chamfer Edges` | 1.12 | 4.83 | **6.0** | 0.0° | 35.3° | 45.0° | 0.29 |
-| `Cube Two Booleans` | 1.93 | 7.79 | **3301639.9** | 9.6° | 86.6° | 90.0° | 1.23 |
+| `Cube Two Booleans` | 1.93 | 7.42 | **3301639.9** | 9.3° | 85.9° | 90.0° | 1.21 |
 | `Cylinder` | 1.01 | 1.08 | **1.1** | 1.5° | 37.9° | 83.3° | 0.09 |
 | `Flat Loop` | 1.10 | 1.11 | **1.1** | 3.5° | 3.9° | 3.9° | 0.04 |
-| `Intersecting Curves` | 7.11 | 32.78 | **34.1** | 10.1° | 64.3° | 85.7° | 1.29 |
+| `Intersecting Curves` | 7.11 | 32.81 | **34.1** | 9.9° | 64.3° | 85.7° | 1.29 |
 | `Loopsided Chamfers Cube` | 2.21 | 7.69 | **7.7** | 0.0° | 44.0° | 44.0° | 0.50 |
 | `Non Cordal Bevels` | 2.37 | 5.80 | **5.8** | 0.0° | 45.0° | 45.0° | 0.54 |
 | `Plate` | 1.05 | 1.11 | **1.1** | 6.2° | 52.9° | 83.3° | 0.12 |
-| `Plate And Cylinder` | 1.12 | 1.81 | **10.0** | 0.0° | 33.9° | 79.9° | 1.63 |
+| `Plate And Cylinder` | 1.12 | 1.81 | **10.0** | 0.0° | 34.5° | 79.9° | 1.63 |
 | `Shape with holes` | 1.01 | 1.03 | **9.2** | 0.0° | 0.0° | 0.0° | 2.51 |
 | `Square Plate Small Hole` | 5.00 | 800.00 | **800.0** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Far Away` | 5.00 | 798.92 | **798.9** | 0.0° | 45.0° | 45.0° | 0.81 |
 | `Square Plate Small Hole Scaled Down` | 3.54 | 7.07 | **7.1** | 0.0° | 45.0° | 45.0° | 0.68 |
-| `Stairs Beveled` | 2.33 | 9.78 | **14.3** | 19.8° | 88.2° | 90.0° | 1.04 |
-| `Stairs Curves and Bevel` | 1.76 | 9.72 | **47.6** | 10.8° | 40.1° | 90.0° | 0.69 |
+| `Stairs Beveled` | 2.29 | 9.78 | **14.3** | 19.6° | 87.9° | 90.0° | 1.05 |
+| `Stairs Curves and Bevel` | 1.76 | 9.80 | **47.6** | 10.9° | 39.8° | 90.0° | 0.69 |
 | `Truncated Cone` | 1.13 | 1.60 | **1.7** | 2.2° | 43.0° | 84.5° | 0.31 |
 
 Percentiles and worst, never means: the failure mode is a handful of degenerate cells from a fan or a stretched band, and a mean hides exactly that. `Edge cv` is the coefficient of variation of edge length — how uneven the mesh is overall.

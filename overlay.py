@@ -1120,6 +1120,190 @@ def _draw_vertex_dots(
 
 
 # ---------------------------------------------------------------------------
+#  The patch data debug display
+# ---------------------------------------------------------------------------
+# What the bridge actually wrote, on the surface it wrote it about: the face id
+# of each patch, and the `[loop_start, loop_count]` range that names it.
+#
+# Its own handler rather than the session's, and deliberately so: the question
+# it answers -- "which CAD face is this, and does the mesh still agree with the
+# groups?" -- is asked of a freshly imported object, before any session exists.
+# The callback early-outs on the toggle, so it is installed once and left there;
+# a handler armed and disarmed by a property update is a handler that is missing
+# after a file load, which looks exactly like an overlay that does not work.
+DEBUG_LABEL_COLOR = (1.0, 0.95, 0.55, 1.0)
+DEBUG_DETAIL_COLOR = (0.72, 0.80, 0.95, 1.0)
+DEBUG_BG = (0.08, 0.08, 0.10, 0.78)
+DEBUG_FONT_SIZE = 12
+DEBUG_PAD = 5
+DEBUG_LINE_GAP = 2
+
+# A backstop, not a policy. Under Hover -- the default -- one label is drawn and
+# this is never reached; under All, on a part of a few hundred faces, the text
+# stopped being readable long before it stopped being affordable.
+MAX_DEBUG_LABELS = 250
+
+_debug_handle: object | None = None
+
+# (object name, face id) under the cursor, or None. Written by
+# `operators.RETOP_OT_patch_hover`, which is the only thing that sees an event;
+# a module global rather than a scene property because a property written on
+# every mouse move marks the file as modified, and reading a mesh should not.
+# Empty after a reload and after a file load, which this must cope with.
+debug_hover: tuple[str, int] | None = None
+
+
+def _has_face_ids(obj: "bpy.types.Object | None") -> bool:
+    return (obj is not None and obj.type == 'MESH'
+            and bool(obj.data.get("face_ids")))
+
+
+def _patch_debug_target(
+    context: bpy.types.Context, scope: str
+) -> "bpy.types.Object | None":
+    """The object whose patch data to write out.
+
+    Under Hover that is whatever the cursor found, which may be neither the
+    active object nor the session's -- pointing at a patch is the whole of the
+    question being asked, so nothing else gets to override it. Otherwise the
+    active object when it carries face ids, so this works with no session at
+    all, and the session's object failing that, since during one the active
+    object may well be the preview or the result mesh.
+    """
+    if scope == 'HOVER':
+        if debug_hover is None:
+            return None
+        hovered = bpy.data.objects.get(debug_hover[0])
+        return hovered if _has_face_ids(hovered) else None
+
+    obj = context.active_object
+    if _has_face_ids(obj):
+        return obj
+
+    state = getattr(context.scene, "plasticity_retop", None)
+    if state is None:
+        return None
+    session = bpy.data.objects.get(getattr(state, "session_object_name", ""))
+    return session if _has_face_ids(session) else None
+
+
+def _facing_away(
+    normal: "mathutils.Vector",
+    anchor: "mathutils.Vector",
+    rv3d: bpy.types.RegionView3D,
+) -> bool:
+    """Whether a patch's own normal points away from the viewpoint.
+
+    The labels are screen-space text and so have no depth to be tested against
+    -- which is what keeps them legible over the surface they describe, and also
+    what would otherwise write the back of a closed part over its front.
+    """
+    inverse = rv3d.view_matrix.inverted()
+    if rv3d.is_perspective:
+        eye = anchor - inverse.translation
+    else:
+        # Ortho: every point is seen along the same axis, and the camera's
+        # translation is not on it.
+        eye = -inverse.col[2].to_3d()
+    return normal.dot(eye) > 0.0
+
+
+def _draw_patch_debug() -> None:
+    context = bpy.context
+    state = getattr(context.scene, "plasticity_retop", None)
+    if state is None or not getattr(state, "debug_patch_ids", False):
+        return
+
+    region = context.region
+    rv3d = context.region_data
+    if region is None or rv3d is None:
+        return
+
+    scope = getattr(state, "debug_patch_scope", 'HOVER')
+    obj = _patch_debug_target(context, scope)
+    if obj is None:
+        return
+
+    labels = cad_display.patch_labels(obj.data)
+    if scope == 'HOVER':
+        wanted = {debug_hover[1]} if debug_hover is not None else set()
+    elif scope == 'SELECTED':
+        wanted = cad_display.selected_face_ids(obj.data)
+    else:
+        wanted = None
+    if wanted is not None:
+        labels = [label for label in labels if label.face_id in wanted]
+    if not labels:
+        return
+
+    matrix = obj.matrix_world
+    rotation = matrix.to_3x3()
+    # A hovered patch is the one the cursor is on, so it is in front by
+    # construction; culling it can only ever hide the answer (a back face seen
+    # through an open shell is still the face being pointed at).
+    cull = getattr(state, "debug_patch_cull", True) and scope != 'HOVER'
+    detail = getattr(state, "debug_patch_detail", True)
+    scale = max(0.5, getattr(state, "overlay_scale", 1.0))
+
+    font_id = 0
+    _set_font_size(font_id, DEBUG_FONT_SIZE * scale)
+    pad = DEBUG_PAD * scale
+    gap = DEBUG_LINE_GAP * scale
+
+    drawn = 0
+    for label in labels:
+        if drawn >= MAX_DEBUG_LABELS:
+            break
+        world = matrix @ label.anchor
+        if cull and _facing_away(rotation @ label.normal, world, rv3d):
+            continue
+        screen = view3d_utils.location_3d_to_region_2d(region, rv3d, world)
+        if screen is None:  # behind the camera
+            continue
+
+        lines = [(f"#{label.face_id}", DEBUG_LABEL_COLOR)]
+        if detail:
+            lines.append((f"{label.loop_start}+{label.loop_count}",
+                          DEBUG_DETAIL_COLOR))
+            lines.append((f"{label.poly_count} poly", DEBUG_DETAIL_COLOR))
+
+        measured = [(text, colour) + blf.dimensions(font_id, text)
+                    for text, colour in lines]
+        width = max(item[2] for item in measured)
+        height = sum(item[3] for item in measured) + gap * (len(measured) - 1)
+
+        x = screen[0] - width * 0.5
+        y = screen[1] - height * 0.5
+        _draw_filled_rect(x - pad, y - pad, width + 2 * pad, height + 2 * pad,
+                          DEBUG_BG)
+
+        # Bottom-up, so the id reads first from the top.
+        cursor = y
+        for text, colour, text_w, text_h in reversed(measured):
+            blf.color(font_id, *colour)
+            blf.position(font_id, x + (width - text_w) * 0.5, cursor, 0)
+            blf.draw(font_id, text)
+            cursor += text_h + gap
+        drawn += 1
+
+
+def enable_patch_debug() -> None:
+    """Install the debug handler. Idempotent, and left installed for the life of
+    the addon -- see the note above."""
+    global _debug_handle
+    if _debug_handle is None:
+        _debug_handle = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_patch_debug, (), 'WINDOW', 'POST_PIXEL')
+
+
+def disable_patch_debug() -> None:
+    global _debug_handle
+    if _debug_handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_debug_handle, 'WINDOW')
+        _debug_handle = None
+
+
+# ---------------------------------------------------------------------------
 #  The mirror's axis picker
 # ---------------------------------------------------------------------------
 # Alt+X arms `RETOP_OT_mirror` and it then waits for X, Y or Z. That prompt

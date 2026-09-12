@@ -245,9 +245,9 @@ this before anything else when a patch dices strangely far from the origin.
 | `constants.py` | generator names and the sets built from them; imports nothing, so `overlay` can share them with `operators` |
 | `patch_data.py` | mesh → patches, weld map (scoped to border candidates), boundary loops, **and the per-mesh cache all of that lives in** (`analyse`) |
 | `sides.py` | corner detection (angle and/or topology), corner *ranking*, split loop into sides, merge small sides |
-| `geometry.py` | Coons/transfinite grids, arc-length resampling, BVH, reprojection |
+| `geometry.py` | Coons/transfinite grids, arc-length resampling, BVH, reprojection, the interior relaxation and the cell-quality measure it steers by |
 | `generators/` | one generator per patch type; `find_generator(n_sides)` picks the first match |
-| `cad_display.py` | B-rep edges/vertices recovered from `face_ids`, and the derived surface flow — cached, for the overlay |
+| `cad_display.py` | B-rep edges/vertices recovered from `face_ids`, the derived surface flow, and the raw group data behind the patch debug display — all cached, for the overlay |
 | `patchprep.py` | one face → `PreparedPatch`: corners resolved, boundary split into sides, planarity |
 | `sidematch.py` | side references, what each may match, pin kinds, span-collision resolution, substitution |
 | `mesh_build.py` | preview object, committing into `<Source>_Retop`, span registry, committed-boundary cache, appearance, shading, collection mirroring |
@@ -441,6 +441,65 @@ Two boundary loops does **not** by itself mean Ring: see the band invariant.
   only that falls back to four by arc length, spread by *length* rather than
   index because a tessellated circle is not sampled uniformly.
   `tests/test_strip.py` pins the stadium, the circle and the rounded rectangle.
+- **The interior is relaxed after the grid is built, and the boundary never
+  moves.** Every generator here interpolates between opposite sides, which is
+  the right answer for a four-sided region whose sides face each other and a
+  poor one as soon as they do not: against a **concave** boundary -- the rim of
+  a hole, a slot's flank, a face left by a boolean -- the cells bunch against
+  the concavity and stretch away from it, and around an **acute** corner they
+  collapse. Neither is decided by the boundary, so no choice of corners, spans
+  or generator can fix it; only moving the interior points can, and
+  `geometry.relax_interior_points` is that, run from `_generate_for_face` once
+  for every generator (`state.relax_iterations`, 8 by default).
+  What is pinned is the generator's own `boundary_local_indices`, never
+  recomputed from the preview's topology: a vertex is untouchable because
+  something *outside* the patch may weld to it -- by identity for a corner, by
+  proximity for the rest -- which is a fact about the patch, not about whether
+  an edge happens to carry one face. So matching, propagation and the welds are
+  untouched by construction, and `tests/test_relax.py` asserts the boundary is
+  where it was to the last float rather than within a tolerance.
+  **Every move must improve the worst cell it touches**, and that guard is what
+  makes it a default rather than a per-part setting. A plain Laplacian pass is
+  not an improvement everywhere -- on an already-regular grid it pulls the
+  interior towards equal *edge lengths*, which is not where transfinite
+  interpolation put them -- and measured across the fixture the unguarded
+  version improved four shapes' cell quality and made three others' worse. With
+  the guard, a patch it has nothing to offer comes back exactly as the generator
+  built it.
+  The measure is `geometry.cell_quality`: the sine of the smallest corner angle
+  **times** the ratio of the shortest edge to the longest. Neither half alone
+  will do -- a 1x100 rectangle has four perfect right angles, and a rhombus with
+  a 5 degree corner has four equal edges -- and a stretched cell is the whole
+  complaint this answers. It also takes a reference normal, so a step that turns
+  a cell over while keeping it square scores 0; no measure of the angles can see
+  that on its own.
+  **Every pass reprojects**, because a Laplacian step moves a point towards the
+  chord between its neighbours, i.e. *inside* a curved surface, and iterating
+  without putting it back is exactly the deviation the whole addon is measured
+  by. So it is a surface-constrained relaxation -- step, project, repeat -- and
+  it does nothing at all without a BVH: with `reproject` off it would be the
+  shrink and nothing else, which is why the panel greys the row out rather than
+  ignoring it. A step whose *projection* is longer than the step itself is
+  refused: the correction after a tangential move is second order and far
+  shorter than the move, so a longer one means the point left the patch and
+  `find_nearest` is answering with the nearest point on the **boundary** --
+  which drags the vertex onto an edge and folds the cells either side of it,
+  the same fold `nside.interior_point` exists to avoid, met from the other
+  direction.
+  **It stops at `RELAX_QUALITY_TARGET` (0.5) and only tries the vertices
+  touching a cell below it.** A cell twice as long as it is wide scores 0.5 and
+  is an ordinary retopology cell, not a defect. That stop is also what makes
+  this affordable on **every hover**: a clean patch costs one sweep of its faces
+  and returns (0.4 ms at 10x10, 6 ms at 40x40), and the cost of the rest scales
+  with the size of the problem rather than the size of the patch. The count in
+  the panel is a cap, not a dose.
+  Measured on the fixture at MID, against the same run with it off: `Cone`'s max
+  deviation 13.86% to 10.48% and its worst aspect ratio 9.2x to 2.9x,
+  `Carved Rounded Slot`'s aspect p95 10.33x to 10.00x and skew p95 58.8 to 55.0
+  degrees, `Cube Two Booleans`' aspect p95 7.79x to 7.42x -- and **not one
+  count moved**: same vertices, same faces, same open boundary edges, same
+  welds, the same five known failures at the same values.
+
 - **An N-Side patch is one Coons sub-patch per side, not one quad per boundary
   vertex.** A quad mesh of an odd-sided region has to put an irregular vertex
   somewhere and the middle is where every tool puts it, so the centre is not
@@ -1726,10 +1785,127 @@ description rather than left to be noticed.
 is read while *choosing* a surface as much as while adjusting one. Both are
 remappable — see `keymap.py`.
 
+## Reading the raw bridge data (the patch debug display)
+
+Both displays above describe what the CAD model *means*. When a patch comes out
+belonging to a face it visibly isn't, the question is one level below that:
+what do `mesh["groups"]` and `mesh["face_ids"]` actually say?
+`state.debug_patch_ids` writes each patch's face id over its own surface, with
+the `[loop_start, loop_count]` range beside it, and
+`operators.RETOP_OT_print_patch_data` dumps the whole table to the console —
+a part has hundreds of faces, which is a console's job and not a sidebar's.
+
+**It has its own draw handler, installed for the life of the addon.** The
+session's overlay is not an option: the question is asked of a *freshly
+imported* object, before any session exists. And the handler is not armed and
+disarmed by the property's update callback either — a handler installed that
+way is missing after a file load that restored the toggle as on, which looks
+exactly like a display that does not work. It is installed once from
+`operators.register` and its callback early-outs on the toggle, so the cost
+when off is one `getattr` per redraw. `overlay.disable()` deliberately does
+**not** take it with it (`tests/test_overlay.py` pins that): a debug display
+that vanishes when the session ends is one that cannot be used to find out why
+the session went wrong.
+
+**Labelling every face at once is a wall of text**, so one patch is labelled at
+a time and the one chosen is the one **under the cursor**
+(`debug_patch_scope`, default `HOVER`). Selecting it with `L` was the first
+answer and it is the worse one: the bridge never joins two faces'
+tessellations, so select-linked does stop exactly on a patch border — but it
+asks for a selection to be made before the question can be asked and unmade
+afterwards, it destroys whatever selection was there, and in **Edit Mode**,
+which is where a mesh is examined, it reads as nothing at all: Blender only
+writes selection flags back to the mesh datablock on *leaving* edit mode, so the
+one place the picker is natural is the one place its answer never arrives.
+Hovering has none of that and works in either mode. `SELECTED` is kept for the
+one case hovering cannot serve — several patches at once — and `ALL` for a small
+part; the panel says why a selection reads as empty rather than looking broken.
+
+**Hover needs a mouse position, and a draw handler is given no event.** So
+`operators.RETOP_OT_patch_hover` is a modal that does nothing but raycast on
+mouse moves and leave `(object name, face id)` in `overlay.debug_hover` — the
+same arrangement the session's tooltip has with `overlay.cursor_window`, except
+this one must run with **no session**, so it is its own modal rather than a line
+in `_modal`. It returns `PASS_THROUGH` on every event, so it sits under the
+knife, a loop cut, a transform or Blender's own selection without taking
+anything from them, and it checks the toggle on every event rather than trusting
+whoever turned it off. A module global and not a scene property: a property
+written on every mouse move marks the file as modified, and looking at a mesh
+must not. `operators.sync_patch_hover` starts it — from the property update, and
+from `load_post`, since a modal does not survive a file load but the property
+asking for one does, and a display frozen on the last thing the cursor touched
+before the load looks exactly like one that has stopped working. Starting is
+deferred through a timer: an update callback has a restricted context and
+`INVOKE_DEFAULT` needs a window and a VIEW_3D area to register a handler on.
+The hover is also **not culled by facing** — the cursor is on it, so it is in
+front by construction, and the panel greys `debug_patch_cull` out under `HOVER`
+rather than leave a checkbox that does nothing.
+
+The Edit Mode half rests on two facts about Blender rather than on anything
+here. `scene.ray_cast` **does** hit the object being edited, through its
+evaluated cage, so the pick needs no special case. And `mesh.polygons` is
+whatever it was on entering edit mode, so the labels describe the mesh as it was
+at that moment — which is the right answer for a CAD import nobody edits, and
+the only one available, since the datablock is what carries `groups`/`face_ids`
+in the first place.
+
+`patch_labels` is the whole mesh, always, keyed on the geometry alone: which of
+them to draw is a filter over a few hundred entries and belongs at the point of
+drawing, since scoping the cache would put a second, far more volatile key on it
+while its expensive half — a scan of every polygon centre — does not depend on
+the scope at all. `selected_face_ids` does need that second key, because
+selection is not geometry and so does not move `mesh_fingerprint`:
+`cad_display._selection_fingerprint` is a second CRC, `foreach_get` plus
+`zlib.crc32`, the same budget the geometry one already spends.
+
+**A label's anchor is a polygon centre, never the mean of the patch.** The mean
+of a concave face is outside it and the mean of an annulus is in its hole,
+which puts a label on a face it does not describe. The polygon nearest that
+mean is on the surface by construction. Back-facing patches are culled by that
+polygon's normal (`debug_patch_cull`) — the labels are screen-space text with
+no depth to be tested against, which is what keeps them readable over the
+surface and what would otherwise write the far side of a closed part over the
+near side.
+
+**`patch_data.group_report` is the check under all of it, and one of its
+answers is reported to everyone.** `polygon_face_ids` walks the group ranges
+positionally — it advances when a polygon's `loop_start` passes the current
+range's end — which is correct exactly while those ranges still tile the loop
+array *on polygon boundaries*. They do as imported, and stop doing so the
+moment anything re-topologizes the mesh underneath them: a triangulate, a
+decimate, a join, a modifier applied. Nothing raises when they don't. Polygons
+are handed to whichever face the range they fall in happens to name, and the
+answer that comes back is complete, plausible and wrong — every patch boundary
+in the file, with nothing anywhere saying why. So the integrity half is drawn
+by `ui._draw_group_integrity` with the other warnings, visible without
+Developer Mode and only when something is actually broken — the same judgement
+`show_cracks` makes. The inspector half stays behind Developer Mode: a loop
+index is of no use to anyone who installed a release zip.
+
+**Triangulation is reported, never required, and that is measured rather than
+assumed.** The bridge offers an untriangulated export and nothing here cares:
+`polygon_face_ids` works in loop-index space, and
+`geometry.build_bvh_with_polygon_map` fan-triangulates whatever it is handed
+(its own comment says the triangulated import makes that "normally a no-op").
+So `GroupReport.triangulated` and the polygon-size histogram answer "what am I
+looking at", and a quad export must come back with an **empty** problem list —
+reporting it as a fault would send people re-exporting to fix something that
+was never broken. `tests/test_patch_debug.py` pins that, and pins the
+corruption case at both ends: the report names the mid-polygon boundary *and*
+`polygon_face_ids` really does mis-assign on it, since a warning about a case
+that does not actually go wrong is a warning worth removing.
+
+A modulo-3 check on `loop_start` would catch some of this — in an all-triangle
+mesh every range boundary is a multiple of three — but it is a proxy for the
+real question and answers it only for one export setting. Checking the
+boundaries against the polygons themselves is the same cost and holds either
+way.
+
 ## Status
 
 Implemented: Quad, Triangle, Wedge (2 sides), N-Side (5+, one Coons
-sub-patch per side around a centre), Ring (two boundary loops: a face with a hole, or a tube-like
+sub-patch per side around a centre) -- all of them followed by the interior
+relaxation that evens out their cells without touching their boundary -- Ring (two boundary loops: a face with a hole, or a tube-like
 face — this is the Cylinder case), N-gon mode for flat faces, topological
 corner detection, span propagation,
 per-patch UVs, boundary welding, smooth shading with sharp patch borders,
@@ -1759,6 +1935,13 @@ the band, and spans don't propagate *into* a ring), faces with **more than one
 hole** (outer loop only, panel warns), **Quad Fill** with configurable loop
 cuts, **N-Side** with per-side spans and manual corner placement, quad-family
 (solving a chain of connected quads in one click).
+
+Also implemented: the **patch debug display** — each patch's face id and
+`[loop_start, loop_count]` written over its own surface, following the cursor
+in Object *and* Edit Mode, behind Developer Mode; and the **group
+integrity check** under it, which is shown to everyone because group ranges
+that have stopped lining up with the polygons make `polygon_face_ids` wrong
+everywhere without raising anything.
 
 Also implemented: **several matches on one N-Side patch**, since its sides no
 longer share a span (`nside.spoke_allocation`); and **cracked borders**, the

@@ -25,7 +25,10 @@ here: they show the topology the retopology would actually get.
 Everything is cached per mesh, keyed on the same fingerprint `patch_data` uses.
 A draw handler runs on every redraw, and none of this may be recomputed there.
 """
+import array
+import zlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from . import generators
@@ -49,8 +52,10 @@ _CACHE_LIMIT = 4
 def invalidate(mesh: "bpy.types.Mesh | None" = None) -> None:
     if mesh is None:
         _cache.clear()
+        _selected_cache.clear()
     else:
         _cache.pop(mesh.name, None)
+        _selected_cache.pop(mesh.name, None)
 
 
 def _cached(mesh: "bpy.types.Mesh", key: str, build: Callable[[], _T]) -> _T:
@@ -326,6 +331,151 @@ def flow_segments(
 def patch_count(mesh: "bpy.types.Mesh") -> int:
     """How many CAD faces the mesh declares -- for the panel to size the cost."""
     return len(patch_data.analyse(mesh).patches)
+
+
+# --- the raw bridge data, for the debug display -----------------------------
+
+
+def integrity(mesh: "bpy.types.Mesh") -> patch_data.GroupReport:
+    """`patch_data.group_report`, cached like everything else here.
+
+    Asked for from a panel draw, which runs on every mouse move over the
+    sidebar, so it may no more walk a mesh than a viewport handler may.
+    """
+    return _cached(mesh, "integrity", lambda: patch_data.group_report(mesh))
+
+
+@dataclass
+class PatchLabel:
+    """One patch's raw bridge numbers, and where to write them on screen.
+
+    `anchor` is the centre of one of the patch's own polygons -- the one nearest
+    the mean of them all -- rather than the mean itself. The mean of a concave
+    patch is outside it and the mean of an annulus is in its hole, which would
+    put a label on a face it does not describe; a polygon centre is on the
+    surface by construction. `normal` is that polygon's, and is what lets the
+    far side of a closed part be culled instead of writing its labels over the
+    near side.
+    """
+    face_id: int
+    loop_start: int
+    loop_count: int
+    poly_count: int
+    anchor: "mathutils.Vector"
+    normal: "mathutils.Vector"
+
+
+def _selection_fingerprint(mesh: "bpy.types.Mesh") -> int:
+    """A CRC of which polygons are selected.
+
+    Selection does not touch `patch_data.mesh_fingerprint` -- it is not
+    geometry -- so scoping the labels to the selection needs its own key. One
+    `foreach_get` plus one CRC, both C loops, which is the same budget the
+    geometry fingerprint already spends per redraw.
+    """
+    count = len(mesh.polygons)
+    flags = array.array("i", bytes(4 * count))
+    if count:
+        mesh.polygons.foreach_get("select", flags)
+    return zlib.crc32(flags.tobytes())
+
+
+def patch_labels(mesh: "bpy.types.Mesh") -> list[PatchLabel]:
+    """Every patch's `face_id` / `loop_start` / `loop_count`, placed in space.
+
+    Always the whole mesh, keyed on the geometry alone. Which of them to *draw*
+    -- one under the cursor, the selected ones, all of them -- is a filter over
+    a few hundred entries and belongs at the point of drawing: scoping this
+    would put a second, far more volatile key on a cache whose expensive half
+    (a scan of every polygon centre) does not depend on it at all.
+    """
+    return _cached(mesh, "labels", lambda: _build_patch_labels(mesh))
+
+
+# mesh name -> (geometry fingerprint, selection crc, face ids). Same shape and
+# same reason as `_label_cache`: the panel asks for this on every redraw of the
+# sidebar, and walking the polygons there is no cheaper than doing it in a
+# viewport handler.
+_selected_cache: dict[str, tuple[patch_data.Fingerprint, int, set[int]]] = {}
+
+
+def selected_face_ids(mesh: "bpy.types.Mesh") -> set[int]:
+    """The face ids of the patches carrying a selected polygon.
+
+    Empty while Blender holds the mesh in Edit Mode: selection flags are only
+    written back to the mesh datablock on leaving it. That is a fact about
+    Blender rather than something to work around, and the panel says so.
+    """
+    fingerprint = patch_data.mesh_fingerprint(mesh)
+    selection = _selection_fingerprint(mesh)
+
+    hit = _selected_cache.get(mesh.name)
+    if hit is not None and hit[0] == fingerprint and hit[1] == selection:
+        return hit[2]
+
+    count = len(mesh.polygons)
+    flags = array.array("i", bytes(4 * count))
+    if count:
+        mesh.polygons.foreach_get("select", flags)
+    face_id_of_poly = patch_data.analyse(mesh).face_id_of_poly
+    found = {face_id_of_poly[i] for i, on in enumerate(flags)
+             if on and i < len(face_id_of_poly)}
+
+    if len(_selected_cache) >= _CACHE_LIMIT:
+        _selected_cache.pop(next(iter(_selected_cache)))
+    _selected_cache[mesh.name] = (fingerprint, selection, found)
+    return found
+
+
+def _build_patch_labels(mesh: "bpy.types.Mesh") -> list[PatchLabel]:
+    report = integrity(mesh)
+    if not report.entries:
+        return []
+
+    count = len(mesh.polygons)
+    centres = array.array("f", bytes(4 * 3 * count))
+    if count:
+        mesh.polygons.foreach_get("center", centres)
+
+    labels = []
+    for entry in report.entries:
+        if entry.poly_start < 0 or entry.poly_count <= 0:
+            # A group that does not land on a polygon boundary -- reported by
+            # `integrity`, and there is nothing here to point at.
+            continue
+        indices = range(entry.poly_start, entry.poly_start + entry.poly_count)
+
+        # The polygon nearest the patch's own average centre. Two passes over
+        # the patch's polygons, no square roots in the first.
+        mx = my = mz = 0.0
+        for i in indices:
+            mx += centres[i * 3]
+            my += centres[i * 3 + 1]
+            mz += centres[i * 3 + 2]
+        n = entry.poly_count
+        mx, my, mz = mx / n, my / n, mz / n
+
+        best = entry.poly_start
+        best_d = None
+        for i in indices:
+            dx = centres[i * 3] - mx
+            dy = centres[i * 3 + 1] - my
+            dz = centres[i * 3 + 2] - mz
+            d = dx * dx + dy * dy + dz * dz
+            if best_d is None or d < best_d:
+                best_d = d
+                best = i
+
+        polygon = mesh.polygons[best]
+        labels.append(PatchLabel(
+            face_id=entry.face_id,
+            loop_start=entry.loop_start,
+            loop_count=entry.loop_count,
+            poly_count=entry.poly_count,
+            anchor=polygon.center.copy(),
+            normal=polygon.normal.copy(),
+        ))
+    return labels
 
 
 def world_segments(
